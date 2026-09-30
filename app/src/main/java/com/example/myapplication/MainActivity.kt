@@ -1210,7 +1210,8 @@ class MainActivity : AppCompatActivity() {
             Triple("Meters", R.drawable.ic_meter, ::showMeters),
             Triple("Readings", R.drawable.ic_circle_clock, ::showReadings),
             Triple("Submit reading", R.drawable.ic_meter, ::showSubmitReading),
-            Triple("Complaints", R.drawable.ic_support, ::showComplaints)
+            Triple("Complaints", R.drawable.ic_support, ::showComplaints),
+            Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
         )))
         if (user?.optString("role", "customer")?.lowercase() != "customer") {
             form.addView(sectionTitle("Staff workspaces"))
@@ -1320,6 +1321,8 @@ class MainActivity : AppCompatActivity() {
         "Operations & support",
         "Monitor service communications and integrations.",
         listOf(
+            "Support chat" to ::showSupportChat,
+            "Messaging center" to ::showMessagingCenter,
             "Demand notices" to ::showDemandNotices,
             "Support inquiries" to ::showSupportInquiries,
             "Integration health" to ::showIntegrationHealth,
@@ -2591,6 +2594,397 @@ class MainActivity : AppCompatActivity() {
         loadSupportInquiries("open")
     }
 
+    private fun showSupportChat() {
+        childScreen()
+        loadSupportChat(0)
+    }
+
+    private fun loadSupportChat(threadId: Int) {
+        showLoading("Loading support chat")
+        val path = if (threadId > 0) api.query("support_chat.php", mapOf("thread_id" to threadId.toString())) else "support_chat.php"
+        api.request(path) { result ->
+            onResult(result, "Could not load support chat") { response ->
+                val data = response.data()
+                val mode = data.optString("mode", "customer")
+                val form = screen("Support chat", if (mode == "staff") "Handle customer conversations in real time" else "Chat with the support team")
+                val availableAgents = data.optJSONArray("available_agents") ?: JSONArray()
+                val currentAvailable = data.optBoolean("current_user_available")
+                val selectedThread = data.optJSONObject("thread") ?: JSONObject()
+                val threads = data.optJSONArray("threads") ?: JSONArray()
+                val messages = data.optJSONArray("messages") ?: JSONArray()
+
+                form.addView(heroBanner(
+                    title = if (mode == "staff") "Support desk" else "Live support",
+                    message = if (mode == "staff") "${threads.length()} open thread(s) • ${availableAgents.length()} agent(s) available" else "${availableAgents.length()} agent(s) available right now",
+                    eyebrow = if (mode == "staff") "Operations" else "Customer care",
+                    tone = if (availableAgents.length() > 0) toneTeal else toneAmber,
+                    iconRes = R.drawable.ic_support,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard(
+                        if (mode == "staff") "Open threads" else "Your threads",
+                        threads.length().toString(),
+                        R.drawable.ic_support,
+                        toneBlue
+                    ),
+                    summaryCard(
+                        "Agents online",
+                        availableAgents.length().toString(),
+                        R.drawable.ic_circle_check,
+                        if (availableAgents.length() > 0) toneTeal else toneAmber
+                    ),
+                    summaryCard(
+                        "Messages",
+                        messages.length().toString(),
+                        R.drawable.ic_receipt,
+                        toneBlue
+                    ),
+                    summaryCard(
+                        "Availability",
+                        if (currentAvailable) "Online" else "Offline",
+                        R.drawable.ic_circle_alert,
+                        if (currentAvailable) toneTeal else toneAmber
+                    )
+                )))
+
+                if (mode == "staff") {
+                    form.addView(buttonRow(
+                        if (currentAvailable) "Set offline" else "Set online" to {
+                            api.request(
+                                "support_chat.php",
+                                "POST",
+                                JSONObject().put("action", "set_availability").put("available", !currentAvailable)
+                            ) { r ->
+                                runOnUiThread {
+                                    r.onSuccess { toast(it.optString("message", "Availability updated.")); childScreen(); loadSupportChat(selectedThread.optInt("id")) }
+                                        .onFailure(::handleError)
+                                }
+                            }
+                        },
+                        "Refresh" to { childScreen(); loadSupportChat(selectedThread.optInt("id")) }
+                    ))
+                    form.addView(sectionTitle("Open threads"))
+                    if (threads.length() == 0) {
+                        form.addView(empty("No open support threads."))
+                    }
+                    for (index in 0 until threads.length()) {
+                        val thread = threads.optJSONObject(index) ?: continue
+                        val threadView = card(
+                            thread.optString("full_name").ifBlank { thread.optString("account_number").ifBlank { "Thread #${thread.optInt("id")}" } },
+                            listOf(thread.optString("account_number"), thread.optString("status"), thread.optString("last_message_at"))
+                                .filter(String::isNotBlank)
+                                .joinToString(" • "),
+                            if (thread.optInt("id") == selectedThread.optInt("id")) toneTeal else toneNeutral
+                        )
+                        threadView.isClickable = true
+                        threadView.isFocusable = true
+                        threadView.setOnClickListener { childScreen(); loadSupportChat(thread.optInt("id")) }
+                        form.addView(threadView)
+                    }
+                } else {
+                    val agentNames = (0 until availableAgents.length()).mapNotNull { index ->
+                        availableAgents.optJSONObject(index)?.optString("full_name")?.takeIf(String::isNotBlank)
+                            ?: availableAgents.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)
+                    }
+                    form.addView(statusBanner(
+                        if (agentNames.isNotEmpty()) "Support is online" else "Support may be offline",
+                        if (agentNames.isNotEmpty()) agentNames.joinToString(", ") else "You can still send a message and check back later.",
+                        if (agentNames.isNotEmpty()) toneTeal else toneAmber,
+                        R.drawable.ic_support,
+                        false
+                    ))
+                }
+
+                form.addView(sectionTitle("Conversation"))
+                selectedThread.optString("status").takeIf(String::isNotBlank)?.let { status ->
+                    form.addView(statusBanner(
+                        "Thread status",
+                        listOf(
+                            selectedThread.optString("full_name"),
+                            selectedThread.optString("account_number"),
+                            status
+                        ).filter(String::isNotBlank).joinToString(" • "),
+                        toneForStatus(status, toneBlue),
+                        R.drawable.ic_circle_alert,
+                        false
+                    ))
+                }
+                if (messages.length() == 0) {
+                    form.addView(empty("No messages yet. Start the conversation below."))
+                }
+                for (index in 0 until messages.length()) {
+                    val message = messages.optJSONObject(index) ?: continue
+                    form.addView(chatMessageCard(message, mode == "staff", currentUser?.optInt("id") ?: 0))
+                }
+
+                val composer = multilineInput(if (mode == "staff") "Reply to this customer" else "Type your message")
+                val send = actionButton("Send message")
+                form.addView(composer)
+                form.addView(buttonRow(
+                    "Refresh" to { childScreen(); loadSupportChat(selectedThread.optInt("id")) },
+                    "Close thread" to {
+                        if (mode != "staff") {
+                            toast("Only support staff can close threads.")
+                        } else {
+                            api.request(
+                                "support_chat.php",
+                                "POST",
+                                JSONObject().put("action", "close_thread").put("thread_id", selectedThread.optInt("id"))
+                            ) { r ->
+                                runOnUiThread {
+                                    r.onSuccess { toast(it.optString("message", "Thread closed.")); childScreen(); loadSupportChat(0) }
+                                        .onFailure(::handleError)
+                                }
+                            }
+                        }
+                    }
+                ))
+                form.addView(send)
+                addBack(form)
+                send.setOnClickListener {
+                    val activeThreadId = selectedThread.optInt("id")
+                    if (activeThreadId <= 0 || composer.text.isBlank()) {
+                        toast("Open a thread and enter a message.")
+                        return@setOnClickListener
+                    }
+                    setLoading(send, true, "Send message")
+                    api.request(
+                        "support_chat.php",
+                        "POST",
+                        JSONObject().put("action", "send_message").put("thread_id", activeThreadId).put("message", composer.text.toString().trim())
+                    ) { r ->
+                        runOnUiThread {
+                            setLoading(send, false, "Send message")
+                            r.onSuccess { toast(it.optString("message", "Message sent.")); childScreen(); loadSupportChat(activeThreadId) }
+                                .onFailure(::handleError)
+                        }
+                    }
+                }
+                show(form)
+            }
+        }
+    }
+
+    private fun chatMessageCard(message: JSONObject, isStaffDesk: Boolean, currentUserId: Int) = card(
+        when {
+            message.optString("sender_type") == "admin" && (isStaffDesk || message.optInt("sender_id") == currentUserId) -> "You"
+            message.optString("sender_type") == "admin" -> "Support"
+            isStaffDesk -> "Customer"
+            else -> "You"
+        },
+        listOf(
+            message.optString("message"),
+            message.optString("created_at")
+        ).filter(String::isNotBlank).joinToString("\n"),
+        when {
+            message.optString("sender_type") == "admin" && (isStaffDesk || message.optInt("sender_id") == currentUserId) -> toneBlue
+            message.optString("sender_type") == "admin" -> toneTeal
+            isStaffDesk -> toneAmber
+            else -> toneBlue
+        }
+    )
+
+    private fun showMessagingCenter() {
+        childScreen()
+        loadMessagingCenter()
+    }
+
+    private fun loadMessagingCenter() {
+        showLoading("Loading messaging center")
+        api.request("admin/messaging.php") { result ->
+            onResult(result, "Could not load messaging center") { response ->
+                val data = response.data()
+                val form = screen("Messaging center", "SMS broadcasts, availability and internal team chat")
+                val availability = data.optJSONObject("availability") ?: JSONObject()
+                val currentAvailable = availability.optBoolean("current_user_available")
+                val internalMessages = data.optJSONArray("internal_messages") ?: JSONArray()
+                val recentBroadcasts = data.optJSONArray("recent_broadcasts") ?: JSONArray()
+                val clientTemplates = data.optJSONArray("client_templates") ?: JSONArray()
+                val staffTemplates = data.optJSONArray("staff_templates") ?: JSONArray()
+
+                form.addView(heroBanner(
+                    title = "Messaging center",
+                    message = "${internalMessages.length()} internal message(s) • ${recentBroadcasts.length()} recent broadcast(s)",
+                    eyebrow = "Communications",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_support,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Team chat", internalMessages.length().toString(), R.drawable.ic_support, toneBlue),
+                    summaryCard("Broadcasts", recentBroadcasts.length().toString(), R.drawable.ic_receipt, toneTeal),
+                    summaryCard("Templates", (clientTemplates.length() + staffTemplates.length()).toString(), R.drawable.ic_circle_check, toneBlue),
+                    summaryCard("Availability", if (currentAvailable) "Online" else "Offline", R.drawable.ic_circle_alert, if (currentAvailable) toneTeal else toneAmber)
+                )))
+                form.addView(buttonRow(
+                    if (currentAvailable) "Set offline" else "Set online" to {
+                        api.request(
+                            "admin/messaging.php",
+                            "POST",
+                            JSONObject().put("action", "set_availability").put("available", !currentAvailable)
+                        ) { r ->
+                            runOnUiThread {
+                                r.onSuccess { toast(it.optString("message", "Availability updated.")); childScreen(); loadMessagingCenter() }
+                                    .onFailure(::handleError)
+                            }
+                        }
+                    },
+                    "Compose broadcast" to { showBroadcastComposer(data) }
+                ))
+
+                form.addView(sectionTitle("Internal team chat"))
+                if (internalMessages.length() == 0) form.addView(empty("No internal messages yet."))
+                for (index in 0 until internalMessages.length()) {
+                    val message = internalMessages.optJSONObject(index) ?: continue
+                    form.addView(card(
+                        listOf(message.optString("full_name"), message.optString("role").replaceFirstChar(Char::uppercase))
+                            .filter(String::isNotBlank)
+                            .joinToString(" • ")
+                            .ifBlank { "Staff update" },
+                        listOf(message.optString("message"), message.optString("created_at")).filter(String::isNotBlank).joinToString("\n"),
+                        toneBlue
+                    ))
+                }
+                val internalMessage = multilineInput("Send a team update")
+                val sendInternal = actionButton("Send internal message")
+                form.addView(internalMessage)
+                form.addView(sendInternal)
+                sendInternal.setOnClickListener {
+                    if (internalMessage.text.isBlank()) {
+                        toast("Enter a message")
+                        return@setOnClickListener
+                    }
+                    setLoading(sendInternal, true, "Send internal message")
+                    api.request(
+                        "admin/messaging.php",
+                        "POST",
+                        JSONObject().put("action", "send_internal_message").put("message", internalMessage.text.toString().trim())
+                    ) { r ->
+                        runOnUiThread {
+                            setLoading(sendInternal, false, "Send internal message")
+                            r.onSuccess { toast(it.optString("message", "Internal message sent.")); childScreen(); loadMessagingCenter() }
+                                .onFailure(::handleError)
+                        }
+                    }
+                }
+
+                addRecordList(form, "Recent broadcasts", recentBroadcasts, listOf("subject", "sender_name"))
+                addBack(form)
+                show(form)
+            }
+        }
+    }
+
+    private fun showBroadcastComposer(data: JSONObject) {
+        backAction = ::showMessagingCenter
+        val clientTemplates = data.optJSONArray("client_templates") ?: JSONArray()
+        val staffTemplates = data.optJSONArray("staff_templates") ?: JSONArray()
+        val templateOptions = listOf("" to "No template") +
+            (0 until clientTemplates.length()).mapNotNull { index ->
+                clientTemplates.optJSONObject(index)?.let { template ->
+                    "clients:${template.optInt("id")}" to "Client • ${template.optString("title").ifBlank { template.optString("subject") }}"
+                }
+            } +
+            (0 until staffTemplates.length()).mapNotNull { index ->
+                staffTemplates.optJSONObject(index)?.let { template ->
+                    "staff:${template.optInt("id")}" to "Staff • ${template.optString("title").ifBlank { template.optString("subject") }}"
+                }
+            }
+        val recipientGroup = dropdownInput("Recipient group", listOf("clients" to "Clients", "staff" to "Staff"), "clients")
+        val audience = dropdownInput(
+            "Audience",
+            listOf(
+                "all_clients" to "All active clients",
+                "all_staff" to "All active staff",
+                "selected_clients" to "Selected client IDs",
+                "selected_staff" to "Selected staff IDs"
+            ),
+            "all_clients"
+        )
+        val template = dropdownInput("Template", templateOptions, "")
+        val subject = input("Subject")
+        val message = multilineInput("Message")
+        val selectedIds = input("Selected IDs (comma separated, optional)")
+        val saveTemplateTitle = input("Template name to save (optional)")
+        val applyTemplate = secondaryButton("Apply selected template")
+        val send = actionButton("Send broadcast")
+        val saveTemplate = secondaryButton("Save as template")
+        val form = screen("Compose broadcast", "Send SMS notifications like the web messaging center")
+        listOf(recipientGroup, audience, template, applyTemplate, subject, message, selectedIds, saveTemplateTitle, send, saveTemplate).forEach(form::addView)
+        addBack(form)
+
+        applyTemplate.setOnClickListener {
+            val selected = template.tag?.toString().orEmpty()
+            val source = when {
+                selected.startsWith("clients:") -> clientTemplates
+                selected.startsWith("staff:") -> staffTemplates
+                else -> null
+            }
+            val templateId = selected.substringAfter(':', "0").toIntOrNull() ?: 0
+            val templateRow = source?.let { rows ->
+                (0 until rows.length()).mapNotNull { index -> rows.optJSONObject(index) }.firstOrNull { it.optInt("id") == templateId }
+            }
+            if (templateRow != null) {
+                subject.setText(templateRow.optString("subject"))
+                message.setText(templateRow.optString("message"))
+                recipientGroup.tag = if (selected.startsWith("staff:")) "staff" else "clients"
+                recipientGroup.setText(if (selected.startsWith("staff:")) "Staff" else "Clients")
+            }
+        }
+
+        send.setOnClickListener {
+            if (subject.text.isBlank() || message.text.isBlank()) {
+                toast("Enter a subject and message.")
+                return@setOnClickListener
+            }
+            val parsedIds = selectedIds.text.toString().split(',').mapNotNull { it.trim().toIntOrNull() }.filter { it > 0 }
+            setLoading(send, true, "Send broadcast")
+            api.request(
+                "admin/messaging.php",
+                "POST",
+                JSONObject()
+                    .put("action", "send_broadcast")
+                    .put("recipient_group", recipientGroup.tag?.toString().orEmpty())
+                    .put("audience", audience.tag?.toString().orEmpty())
+                    .put("subject", subject.text.toString().trim())
+                    .put("message", message.text.toString().trim())
+                    .put("selected_ids", JSONArray(parsedIds))
+            ) { r ->
+                runOnUiThread {
+                    setLoading(send, false, "Send broadcast")
+                    r.onSuccess { toast(it.optString("message", "Broadcast sent.")); showMessagingCenter() }
+                        .onFailure(::handleError)
+                }
+            }
+        }
+
+        saveTemplate.setOnClickListener {
+            if (saveTemplateTitle.text.isBlank() || subject.text.isBlank() || message.text.isBlank()) {
+                toast("Enter a template name, subject and message.")
+                return@setOnClickListener
+            }
+            setLoading(saveTemplate, true, "Save as template")
+            api.request(
+                "admin/messaging.php",
+                "POST",
+                JSONObject()
+                    .put("action", "save_template")
+                    .put("recipient_group", recipientGroup.tag?.toString().orEmpty())
+                    .put("template_title", saveTemplateTitle.text.toString().trim())
+                    .put("subject", subject.text.toString().trim())
+                    .put("message", message.text.toString().trim())
+            ) { r ->
+                runOnUiThread {
+                    setLoading(saveTemplate, false, "Save as template")
+                    r.onSuccess { toast(it.optString("message", "Template saved.")); showMessagingCenter() }
+                        .onFailure(::handleError)
+                }
+            }
+        }
+        show(form)
+    }
+
     private fun loadSupportInquiries(status: String) {
         showLoading("Loading support inquiries")
         api.request(api.query("admin/support_inquiries.php", mapOf("status" to status, "limit" to "100"))) { result ->
@@ -2915,8 +3309,22 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load accounting overview") { response ->
                 val data = response.data()
                 val form = screen("Accounting overview", "Chart of accounts, trial balance and reconciliation")
+                form.addView(heroBanner(
+                    title = "Accounting control",
+                    message = "Manage the chart of accounts, review balances and post journals from one workspace.",
+                    eyebrow = "Finance",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
+                ))
                 renderFinanceSummary(form, data.optJSONObject("summary"))
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
+                form.addView(quickActionGrid(listOf(
+                    Triple("New account", R.drawable.ic_circle_check) { showAccountEditor(null, accounts) },
+                    Triple("Post journal", R.drawable.ic_receipt) { showPostJournalEntry(accounts) },
+                    Triple("Open ledger", R.drawable.ic_wallet) { showAccountingLedger() },
+                    Triple("Lock period", R.drawable.ic_circle_alert) { showPeriodLockForm() }
+                )))
                 form.addView(sectionTitle("Account management"))
                 val newAccount = actionButton("New account")
                 newAccount.setOnClickListener { showAccountEditor(null, accounts) }
@@ -2928,7 +3336,7 @@ class MainActivity : AppCompatActivity() {
                     val active = account.optBoolean("is_active", true)
                     val row = card(
                         "${account.optString("code")} • ${account.optString("name")}",
-                        "${account.optString("account_type").replace('_', ' ').replaceFirstChar(Char::uppercase)} • ${if (active) "Active" else "Inactive"}",
+                        "${formatAccountType(account.optString("account_type"))} • ${if (active) "Active" else "Inactive"}",
                         if (active) toneBlue else toneNeutral
                     )
                     row.isClickable = true
@@ -3033,6 +3441,21 @@ class MainActivity : AppCompatActivity() {
     private fun showPostJournalEntry(accounts: JSONArray) {
         backAction = ::showAccountingOverview
         val accountOptions = accountOptions(accounts)
+        if (accountOptions.size < 2) {
+            val form = screen("Post journal entry", "Choose accounts by name. Debits must equal credits.")
+            form.addView(heroBanner(
+                title = "Journal entry unavailable",
+                message = "At least two active accounts are required before you can post a journal entry.",
+                eyebrow = "Finance",
+                tone = toneAmber,
+                iconRes = R.drawable.ic_warning_triangle,
+                compact = true
+            ))
+            form.addView(empty("Create or activate more accounts, then try again."))
+            addBack(form)
+            show(form)
+            return
+        }
         val entryDate = datePickerInput("Entry date", today())
         val memo = input("Memo")
         val debitAccountId = dropdownInput("Debit account", accountOptions, accountOptions.firstOrNull()?.first.orEmpty())
@@ -3111,12 +3534,21 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load accounting reports") { response ->
                 val data = response.data()
                 val form = screen("Accounting reports", "Balance sheet, P&L, cash flow and AR aging")
+                form.addView(heroBanner(
+                    title = "Financial reports",
+                    message = "Review statements and receivables in a structured finance view instead of raw text output.",
+                    eyebrow = "Reporting",
+                    tone = toneTeal,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
                 form.addView(sectionTitle("Financial statements"))
                 renderFinanceNode(form, "Balance sheet", data.opt("balance_sheet"))
                 renderFinanceNode(form, "Profit and loss", data.opt("profit_and_loss"))
                 form.addView(sectionTitle("Cash & receivables"))
                 renderFinanceNode(form, "Cash flow", data.opt("cash_flow"))
                 renderFinanceNode(form, "Accounts receivable aging", data.opt("accounts_receivable_aging"))
+                addBack(form)
                 show(form)
             }
         }
@@ -3128,22 +3560,49 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAccountingLedger() {
         childScreen()
-        loadAccountingLedger(0, 0)
+        loadAccountingLedger(0, 0, "")
     }
 
-    private fun loadAccountingLedger(accountId: Int, entryId: Int) {
+    private fun loadAccountingLedger(accountId: Int, entryId: Int, accountType: String) {
         showLoading("Loading accounting ledger")
         val params = mutableMapOf<String, String>()
         if (accountId > 0) params["account_id"] = accountId.toString()
         if (entryId > 0) params["entry_id"] = entryId.toString()
+        if (accountType.isNotBlank()) params["type"] = accountType
         val path = if (params.isEmpty()) "admin/accounting_ledger.php" else api.query("admin/accounting_ledger.php", params)
         api.request(path) { result ->
             onResult(result, "Could not load accounting ledger") { response ->
                 val data = response.data()
                 val form = screen("Accounting ledger", "Accounts, ledgers and journal entries")
+                form.addView(heroBanner(
+                    title = "Ledger explorer",
+                    message = if (accountId > 0) "Inspect account movements and drill into journal entries." else "Find an account to inspect detailed ledger activity.",
+                    eyebrow = "Journal analysis",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
+                ))
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
                 form.addView(sectionTitle("Find account activity"))
-                val accountChoices = accountOptions(accounts)
+                val typeChoices = accountTypeOptions(includeAll = true)
+                val typePicker = dropdownInput("Account type", typeChoices, accountType)
+                form.addView(typePicker)
+                form.addView(secondaryButton("Apply type filter").apply {
+                    setOnClickListener {
+                        childScreen()
+                        loadAccountingLedger(0, 0, typePicker.tag?.toString().orEmpty())
+                    }
+                })
+                val accountChoices = accountOptions(accounts, includeInactive = true)
+                if (accountChoices.isEmpty()) {
+                    form.addView(statusBanner(
+                        "No accounts available",
+                        "The server returned no ledger accounts for the current filter.",
+                        toneAmber,
+                        R.drawable.ic_warning_triangle,
+                        false
+                    ))
+                }
                 val accountPicker = dropdownInput(
                     "Account",
                     accountChoices,
@@ -3157,12 +3616,28 @@ class MainActivity : AppCompatActivity() {
                             toast("Choose an account to view its ledger.")
                         } else {
                             childScreen()
-                            loadAccountingLedger(selectedId, 0)
+                            loadAccountingLedger(selectedId, 0, typePicker.tag?.toString().orEmpty())
                         }
                     }
                 })
                 val selectedAccount = data.optJSONObject("selected_account")
                 if (selectedAccount != null) {
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Account", selectedAccount.optString("name"), R.drawable.ic_receipt, toneBlue),
+                        summaryCard("Code", selectedAccount.optString("code"), R.drawable.ic_circle_check, toneTeal),
+                        summaryCard(
+                            "Type",
+                            formatAccountType(selectedAccount.optString("account_type")),
+                            R.drawable.ic_wallet,
+                            toneBlue
+                        ),
+                        summaryCard(
+                            "Status",
+                            if (selectedAccount.optBoolean("is_active", true)) "Active" else "Inactive",
+                            R.drawable.ic_circle_alert,
+                            if (selectedAccount.optBoolean("is_active", true)) toneTeal else toneAmber
+                        )
+                    )))
                     form.addView(sectionTitle("Ledger: ${selectedAccount.optString("name")}"))
                     addRecordList(form, "Movements", data.optJSONArray("account_ledger"), listOf("entry_no", "line_memo"))
                 }
@@ -3175,15 +3650,29 @@ class MainActivity : AppCompatActivity() {
                     row.isClickable = true
                     row.isFocusable = true
                     val id = entry.optInt("id")
-                    row.setOnClickListener { childScreen(); loadAccountingLedger(accountId, id) }
+                    row.setOnClickListener { childScreen(); loadAccountingLedger(accountId, id, accountType) }
                     form.addView(row)
                 }
                 val selectedEntry = data.optJSONObject("selected_entry")
                 if (selectedEntry != null) {
                     form.addView(sectionTitle("Entry detail"))
-                    addField(form, "Entry no", selectedEntry.optString("entry_no"))
-                    addField(form, "Status", selectedEntry.optString("status"))
-                    addField(form, "Memo", selectedEntry.optString("memo"))
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Entry no", selectedEntry.optString("entry_no"), R.drawable.ic_receipt, toneBlue),
+                        summaryCard("Status", selectedEntry.optString("status"), R.drawable.ic_circle_check, toneForStatus(selectedEntry.optString("status"), toneBlue)),
+                        summaryCard("Date", selectedEntry.optString("entry_date"), R.drawable.ic_circle_clock, toneBlue),
+                        summaryCard(
+                            "Reference",
+                            listOf(
+                                selectedEntry.optString("reference_type"),
+                                selectedEntry.opt("reference_id")?.toString().orEmpty().takeIf(String::isNotBlank)
+                            ).filter(String::isNotBlank).joinToString(" #").ifBlank { "Manual" },
+                            R.drawable.ic_wallet,
+                            toneTeal
+                        )
+                    )))
+                    selectedEntry.optString("memo").takeIf(String::isNotBlank)?.let { memoText ->
+                        form.addView(statusBanner("Memo", memoText, toneBlue, R.drawable.ic_circle_alert, false))
+                    }
                     addRecordList(form, "Lines", selectedEntry.optJSONArray("lines"), listOf("account_name", "line_memo"))
                     if (selectedEntry.optString("status") == "posted") {
                         val reverse = secondaryButton("Reverse this entry")
@@ -3192,11 +3681,12 @@ class MainActivity : AppCompatActivity() {
                             postAction(
                                 "admin/accounting_ledger.php",
                                 JSONObject().put("action", "reverse_entry").put("entry_id", id).put("reversal_date", today())
-                            ) { showAccountingLedger() }
+                            ) { childScreen(); loadAccountingLedger(accountId, 0, accountType) }
                         }
                         form.addView(reverse)
                     }
                 }
+                addBack(form)
                 show(form)
             }
         }
@@ -3215,38 +3705,66 @@ class MainActivity : AppCompatActivity() {
                 val form = screen("Accounting budget", "Budget year: ${data.optString("budget_year")}")
                 val accounts = data.optJSONArray("budget_accounts") ?: JSONArray()
                 val accountChoices = accountOptions(accounts)
+                val budgetRows = data.optJSONArray("budget_vs_actual") ?: JSONArray()
+                val totalBudget = (0 until budgetRows.length()).sumOf { budgetRows.optJSONObject(it)?.optDouble("budget_total") ?: 0.0 }
+                val totalActual = (0 until budgetRows.length()).sumOf { budgetRows.optJSONObject(it)?.optDouble("actual_total") ?: 0.0 }
+                val totalVariance = (0 until budgetRows.length()).sumOf { budgetRows.optJSONObject(it)?.optDouble("variance_total") ?: 0.0 }
+                form.addView(heroBanner(
+                    title = "Budget performance",
+                    message = "${budgetRows.length()} account budget(s) for ${data.optString("budget_year")}",
+                    eyebrow = "Finance planning",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
+                if (budgetRows.length() > 0) {
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Budget total", money(totalBudget), R.drawable.ic_wallet, toneBlue),
+                        summaryCard("Actual total", money(totalActual), R.drawable.ic_receipt, toneTeal),
+                        summaryCard(
+                            "Variance",
+                            money(totalVariance),
+                            R.drawable.ic_warning_triangle,
+                            if (kotlin.math.abs(totalVariance) > 0.009) toneAmber else toneTeal
+                        )
+                    )))
+                }
                 form.addView(sectionTitle("Budget performance"))
-                renderFinanceNode(form, "Budget vs actual", data.opt("budget_vs_actual"))
+                renderBudgetVsActual(form, budgetRows)
                 form.addView(sectionTitle("Set a yearly budget"))
-                val accountId = dropdownInput(
-                    "Budget account",
-                    accountChoices,
-                    accountChoices.firstOrNull()?.first.orEmpty()
-                )
-                val year = input("Financial year (e.g. 2026)").apply { setText(data.optString("budget_year")) }
-                val yearlyBudget = input("Yearly budget amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-                val save = actionButton("Save budget")
-                listOf(accountId, year, yearlyBudget).forEach(form::addView)
-                form.addView(save)
-                save.setOnClickListener {
-                    val selectedAccountId = accountId.tag?.toString()?.toIntOrNull() ?: 0
-                    if (selectedAccountId == 0 || yearlyBudget.text.isBlank()) {
-                        toast("Choose a budget account and enter the yearly budget.")
-                        return@setOnClickListener
-                    }
-                    setLoading(save, true, "Save budget")
-                    api.request(
-                        "admin/accounting_budget.php", "POST",
-                        JSONObject().put("action", "save_budget")
-                            .put("budget_account_id", selectedAccountId)
-                            .put("financial_year", year.text.toString().trim())
-                            .put("budget_mode", "yearly")
-                            .put("eliminate_decimals", false)
-                            .put("yearly_budget", yearlyBudget.text.toString().toDoubleOrNull() ?: 0.0)
-                    ) { r ->
-                        runOnUiThread {
-                            setLoading(save, false, "Save budget")
-                            r.onSuccess { toast(it.optString("message", "Budget saved.")); showAccountingBudget() }.onFailure(::handleError)
+                if (accountChoices.isEmpty()) {
+                    form.addView(empty("No active accounts are available for budgeting yet."))
+                } else {
+                    val accountId = dropdownInput(
+                        "Budget account",
+                        accountChoices,
+                        accountChoices.firstOrNull()?.first.orEmpty()
+                    )
+                    val year = input("Financial year (e.g. 2026)").apply { setText(data.optString("budget_year")) }
+                    val yearlyBudget = input("Yearly budget amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+                    val save = actionButton("Save budget")
+                    listOf(accountId, year, yearlyBudget).forEach(form::addView)
+                    form.addView(save)
+                    save.setOnClickListener {
+                        val selectedAccountId = accountId.tag?.toString()?.toIntOrNull() ?: 0
+                        if (selectedAccountId == 0 || yearlyBudget.text.isBlank()) {
+                            toast("Choose a budget account and enter the yearly budget.")
+                            return@setOnClickListener
+                        }
+                        setLoading(save, true, "Save budget")
+                        api.request(
+                            "admin/accounting_budget.php", "POST",
+                            JSONObject().put("action", "save_budget")
+                                .put("budget_account_id", selectedAccountId)
+                                .put("financial_year", year.text.toString().trim())
+                                .put("budget_mode", "yearly")
+                                .put("eliminate_decimals", false)
+                                .put("yearly_budget", yearlyBudget.text.toString().toDoubleOrNull() ?: 0.0)
+                        ) { r ->
+                            runOnUiThread {
+                                setLoading(save, false, "Save budget")
+                                r.onSuccess { toast(it.optString("message", "Budget saved.")); showAccountingBudget() }.onFailure(::handleError)
+                            }
                         }
                     }
                 }
@@ -3268,43 +3786,55 @@ class MainActivity : AppCompatActivity() {
                 val form = screen("Accounting transfers", "Move funds between accounts")
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
                 val accountChoices = accountOptions(accounts)
+                form.addView(heroBanner(
+                    title = "Account transfers",
+                    message = "Move funds between active accounts without leaving the mobile workspace.",
+                    eyebrow = "Treasury",
+                    tone = toneTeal,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
                 form.addView(sectionTitle("New transfer"))
-                val transferDate = datePickerInput("Transfer date", today())
-                val fromAccountId = dropdownInput(
-                    "From account",
-                    accountChoices,
-                    accountChoices.firstOrNull()?.first.orEmpty()
-                )
-                val toAccountId = dropdownInput(
-                    "To account",
-                    accountChoices,
-                    accountChoices.getOrNull(1)?.first ?: accountChoices.firstOrNull()?.first.orEmpty()
-                )
-                val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-                val memo = input("Memo (optional)")
-                val post = actionButton("Post transfer")
-                listOf(transferDate, fromAccountId, toAccountId, amount, memo).forEach(form::addView)
-                form.addView(post)
-                post.setOnClickListener {
-                    val fromId = fromAccountId.tag?.toString()?.toIntOrNull() ?: 0
-                    val toId = toAccountId.tag?.toString()?.toIntOrNull() ?: 0
-                    if (fromId == 0 || toId == 0 || fromId == toId || amount.text.isBlank()) {
-                        toast("Choose two different accounts and enter an amount.")
-                        return@setOnClickListener
-                    }
-                    setLoading(post, true, "Post transfer")
-                    api.request(
-                        "admin/accounting_transfers.php", "POST",
-                        JSONObject().put("action", "post_transfer")
-                            .put("transfer_date", transferDate.text.toString().trim())
-                            .put("from_account_id", fromId)
-                            .put("to_account_id", toId)
-                            .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
-                            .put("memo", memo.text.toString().trim())
-                    ) { r ->
-                        runOnUiThread {
-                            setLoading(post, false, "Post transfer")
-                            r.onSuccess { toast(it.optString("message", "Transfer posted.")); showAccountingTransfers() }.onFailure(::handleError)
+                if (accountChoices.size < 2) {
+                    form.addView(empty("At least two active accounts are required before you can post a transfer."))
+                } else {
+                    val transferDate = datePickerInput("Transfer date", today())
+                    val fromAccountId = dropdownInput(
+                        "From account",
+                        accountChoices,
+                        accountChoices.firstOrNull()?.first.orEmpty()
+                    )
+                    val toAccountId = dropdownInput(
+                        "To account",
+                        accountChoices,
+                        accountChoices.getOrNull(1)?.first ?: accountChoices.firstOrNull()?.first.orEmpty()
+                    )
+                    val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+                    val memo = input("Memo (optional)")
+                    val post = actionButton("Post transfer")
+                    listOf(transferDate, fromAccountId, toAccountId, amount, memo).forEach(form::addView)
+                    form.addView(post)
+                    post.setOnClickListener {
+                        val fromId = fromAccountId.tag?.toString()?.toIntOrNull() ?: 0
+                        val toId = toAccountId.tag?.toString()?.toIntOrNull() ?: 0
+                        if (fromId == 0 || toId == 0 || fromId == toId || amount.text.isBlank()) {
+                            toast("Choose two different accounts and enter an amount.")
+                            return@setOnClickListener
+                        }
+                        setLoading(post, true, "Post transfer")
+                        api.request(
+                            "admin/accounting_transfers.php", "POST",
+                            JSONObject().put("action", "post_transfer")
+                                .put("transfer_date", transferDate.text.toString().trim())
+                                .put("from_account_id", fromId)
+                                .put("to_account_id", toId)
+                                .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
+                                .put("memo", memo.text.toString().trim())
+                        ) { r ->
+                            runOnUiThread {
+                                setLoading(post, false, "Post transfer")
+                                r.onSuccess { toast(it.optString("message", "Transfer posted.")); showAccountingTransfers() }.onFailure(::handleError)
+                            }
                         }
                     }
                 }
@@ -4612,14 +5142,24 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val periodKey = data.optJSONObject("period")?.optString("key") ?: period
                 val form = screen("Reports", "Period: $periodKey")
+                form.addView(heroBanner(
+                    title = "Operational reports",
+                    message = "Track billing, collections and audit health for the selected period.",
+                    eyebrow = periodKey.replace('_', ' ').replaceFirstChar(Char::uppercase),
+                    tone = toneTeal,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
                 form.addView(buttonRow(
                     "Today" to { childScreen(); loadReports("today") },
                     "This month" to { childScreen(); loadReports("this_month") },
                     "This year" to { childScreen(); loadReports("this_year") }
                 ))
                 val summary = data.optJSONObject("summary") ?: JSONObject()
-                form.addView(card("Billed total", money(summary.optDouble("billed_total"))))
-                form.addView(card("Completed payments", money(summary.optDouble("completed_payments_total"))))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Billed total", money(summary.optDouble("billed_total")), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Completed payments", money(summary.optDouble("completed_payments_total")), R.drawable.ic_wallet, toneTeal)
+                )))
                 addPaymentRows(form, data.optJSONArray("recent_payments"), true)
                 addRecordList(form, "Recent bills", data.optJSONArray("recent_bills"), listOf("account_number", "full_name"))
                 renderNode(form, "Audit status", data.opt("audit_status"))
@@ -5121,19 +5661,35 @@ class MainActivity : AppCompatActivity() {
         return field
     }
 
-    private fun accountOptions(accounts: JSONArray): List<Pair<String, String>> =
+    private fun accountOptions(accounts: JSONArray, includeInactive: Boolean = false): List<Pair<String, String>> =
         (0 until accounts.length()).mapNotNull { index ->
             val account = accounts.optJSONObject(index) ?: return@mapNotNull null
             val id = account.optInt("id")
-            if (id <= 0 || !account.optBoolean("is_active", true)) return@mapNotNull null
+            if (id <= 0 || (!includeInactive && !account.optBoolean("is_active", true))) return@mapNotNull null
             val code = account.optString("code").trim()
             val name = account.optString("name").trim()
-            val type = account.optString("account_type")
-                .replace('_', ' ')
-                .replaceFirstChar(Char::uppercase)
+            val type = formatAccountType(account.optString("account_type"))
             val title = listOf(code, name).filter(String::isNotBlank).joinToString(" • ")
-            (id.toString()) to listOf(title, type).filter(String::isNotBlank).joinToString(" — ")
+            val status = if (account.optBoolean("is_active", true)) "Active" else "Inactive"
+            (id.toString()) to listOf(title, type, status.takeIf { includeInactive }).filterNotNull().filter(String::isNotBlank).joinToString(" — ")
         }
+
+    private fun accountTypeOptions(includeAll: Boolean = false): List<Pair<String, String>> {
+        val options = mutableListOf<Pair<String, String>>()
+        if (includeAll) options += "" to "All account types"
+        options += listOf(
+            "asset" to "Asset",
+            "liability" to "Liability",
+            "equity" to "Equity",
+            "revenue" to "Revenue",
+            "expense" to "Expense",
+            "cost_of_sales" to "Cost of sales"
+        )
+        return options
+    }
+
+    private fun formatAccountType(value: String): String =
+        value.replace('_', ' ').replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
 
     private fun renderFinanceSummary(parent: LinearLayout, summary: JSONObject?) {
         if (summary == null || summary.length() == 0) return
@@ -6065,17 +6621,69 @@ class MainActivity : AppCompatActivity() {
             val title = titleFields.map { row.optString(it) }.firstOrNull(String::isNotBlank)
                 ?: (heading.removeSuffix("s") + " #" + (index + 1))
             val excluded = titleFields.toSet()
-            val keys = row.keys().asSequence().filter { it !in excluded && it != "id" }.sorted().take(6).toList()
-            val subtitle = keys.joinToString("\n") { key ->
+            val scalarKeys = row.keys().asSequence()
+                .filter { key ->
+                    key !in excluded && key != "id" && row.opt(key) !is JSONObject && row.opt(key) !is JSONArray
+                }
+                .sorted()
+                .take(6)
+                .toList()
+            val nestedKeys = row.keys().asSequence()
+                .filter { key -> key !in excluded && (row.opt(key) is JSONObject || row.opt(key) is JSONArray) }
+                .sorted()
+                .toList()
+            val subtitle = scalarKeys.joinToString("\n") { key ->
                 "${key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }}: ${formatValue(key, row.opt(key))}"
             }
-            val view = card(title, subtitle, inferRecordTone(row))
+            val view = card(title, subtitle.ifBlank { "Tap to view details" }, inferRecordTone(row))
             if (onClick != null) {
                 view.isClickable = true
                 view.isFocusable = true
                 view.setOnClickListener { onClick(row) }
             }
             parent.addView(view)
+            nestedKeys.forEach { key ->
+                renderNode(
+                    parent,
+                    key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() },
+                    row.opt(key)
+                )
+            }
+        }
+    }
+
+    private fun renderBudgetVsActual(parent: LinearLayout, rows: JSONArray) {
+        if (rows.length() == 0) {
+            parent.addView(empty("No budget accounts found for this year."))
+            return
+        }
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val accountTitle = listOf(row.optString("code"), row.optString("name"))
+                .filter(String::isNotBlank)
+                .joinToString(" • ")
+                .ifBlank { "Budget account #${index + 1}" }
+            parent.addView(card(
+                accountTitle,
+                row.optString("account_type").replace('_', ' ').replaceFirstChar(Char::uppercase),
+                toneBlue
+            ))
+            parent.addView(summaryCardGrid(listOf(
+                summaryCard("Budget total", money(row.optDouble("budget_total")), R.drawable.ic_wallet, toneBlue),
+                summaryCard("Actual total", money(row.optDouble("actual_total")), R.drawable.ic_receipt, toneTeal),
+                summaryCard(
+                    "Variance",
+                    money(row.optDouble("variance_total")),
+                    R.drawable.ic_warning_triangle,
+                    if (kotlin.math.abs(row.optDouble("variance_total")) > 0.009) toneAmber else toneTeal
+                )
+            )))
+            addRecordList(
+                parent,
+                "Monthly breakdown",
+                row.optJSONArray("months"),
+                listOf("label")
+            )
         }
     }
 
