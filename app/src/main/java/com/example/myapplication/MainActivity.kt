@@ -155,6 +155,7 @@ class MainActivity : AppCompatActivity() {
     private val tintTeal by lazy { ContextCompat.getColor(this, R.color.surface_tint_teal) }
     private val tintAmber by lazy { ContextCompat.getColor(this, R.color.surface_tint_amber) }
     private val tintRed by lazy { ContextCompat.getColor(this, R.color.surface_tint_red) }
+    private val tintNavy by lazy { ContextCompat.getColor(this, R.color.surface_tint_navy) }
     private data class Tone(val accent: Int?, val tint: Int, val border: Int, val onTint: Int)
     private val toneNeutral by lazy { Tone(null, cardBackgroundMuted, border, textPrimary) }
     // The accent bar/icon/text drawn on top of a tinted surface uses the "*Dark" token
@@ -312,18 +313,14 @@ class MainActivity : AppCompatActivity() {
         val login = actionButton("Sign in")
         val createAccount = secondaryButton("Create account")
         val form = screen("My Water Bill", "Secure access to your water account")
-        form.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_launcher_foreground_logo)
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-            contentDescription = getString(R.string.app_name)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(124)
-            ).apply {
-                topMargin = dp(2)
-                bottomMargin = dp(4)
-            }
-        })
+        form.addView(heroBanner(
+            title = "Water account in one place",
+            message = "Pay bills, track meter activity, send readings and manage service requests without using the browser.",
+            eyebrow = "Mobile portal",
+            tone = toneBlue,
+            iconRes = R.drawable.ic_wallet,
+            compact = false
+        ))
         form.addView(sectionTitle("Sign in"))
         form.addView(body("Use the same details you use on the customer portal.").apply {
             setPadding(dp(2), 0, 0, dp(16))
@@ -1144,6 +1141,22 @@ class MainActivity : AppCompatActivity() {
         val user = currentUser
         val name = user?.optString("full_name")?.takeIf(String::isNotBlank) ?: "customer"
         val form = screen(screen.optString("title").ifBlank { "My Water Bill" }, "Welcome back")
+        val outstanding = summary.optDouble("outstanding_amount")
+        val heroMessage = buildString {
+            append(if (outstanding > 0.01) "Outstanding balance ${money(outstanding)}" else "Your account is up to date")
+            user?.optString("account_number")?.takeIf(String::isNotBlank)?.let {
+                append(" • Account ")
+                append(it)
+            }
+        }
+        form.addView(heroBanner(
+            title = "Hello, ${name.replaceFirstChar(Char::uppercase)}",
+            message = heroMessage,
+            eyebrow = user?.optString("role")?.replaceFirstChar(Char::uppercase).orEmpty().ifBlank { "Customer" },
+            tone = if (outstanding > 0.01) toneAmber else toneTeal,
+            iconRes = if (outstanding > 0.01) R.drawable.ic_wallet else R.drawable.ic_circle_check,
+            compact = true
+        ))
         form.addView(identityCard(
             name,
             user?.optString("account_number").orEmpty(),
@@ -1334,7 +1347,24 @@ class MainActivity : AppCompatActivity() {
     ) {
         backAction = ::showDashboard
         val form = screen(title, subtitle)
-        destinations.forEach { (label, action) -> addMenu(form, label, action) }
+        form.addView(heroBanner(
+            title = title,
+            message = subtitle,
+            eyebrow = "Workspace",
+            tone = toneBlue,
+            iconRes = R.drawable.ic_circle_check,
+            compact = true
+        ))
+        destinations.forEach { (label, action) ->
+            addWorkspace(
+                form,
+                label,
+                "Open $label.",
+                iconForWorkspaceLabel(label),
+                action,
+                toneForWorkspaceLabel(label)
+            )
+        }
         show(form)
     }
 
@@ -1374,6 +1404,16 @@ class MainActivity : AppCompatActivity() {
     private fun renderProfile(profileData: JSONObject, user: JSONObject, themePreference: String, availablePreferences: List<String>) {
         val screen = profileData.optJSONObject("screen") ?: JSONObject()
         val form = screen(screen.optString("title").ifBlank { "Profile" }, user.optString("full_name"))
+        form.addView(heroBanner(
+            title = user.optString("full_name").ifBlank { "Profile" },
+            message = listOf(user.optString("account_number"), user.optString("status"))
+                .filter(String::isNotBlank)
+                .joinToString(" • "),
+            eyebrow = user.optString("role").replaceFirstChar(Char::uppercase).ifBlank { "Account" },
+            tone = toneForStatus(user.optString("status"), toneBlue),
+            iconRes = R.drawable.ic_person,
+            compact = true
+        ))
         val alerts = screen.optJSONArray("alerts") ?: JSONArray()
         for (index in 0 until alerts.length()) {
             val alert = alerts.optJSONObject(index) ?: continue
@@ -1537,22 +1577,27 @@ class MainActivity : AppCompatActivity() {
                     val data = response.data()
                     val summary = data.optJSONObject("summary") ?: JSONObject()
                     val form = screen("Account statement", "Bills and completed payments")
-                    form.addView(card("Billed", money(summary.optDouble("billed_amount"))))
-                    form.addView(card("Paid", money(summary.optDouble("paid_amount"))))
-                    form.addView(card("Outstanding", money(summary.optDouble("outstanding_amount"))))
+                    form.addView(heroBanner(
+                        title = "Statement overview",
+                        message = "Review billed, paid and outstanding amounts in one place.",
+                        eyebrow = "Account activity",
+                        tone = if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal,
+                        iconRes = R.drawable.ic_receipt,
+                        compact = true
+                    ))
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Billed", money(summary.optDouble("billed_amount")), R.drawable.ic_receipt, toneBlue),
+                        summaryCard("Paid", money(summary.optDouble("paid_amount")), R.drawable.ic_circle_check, toneTeal),
+                        summaryCard(
+                            "Outstanding",
+                            money(summary.optDouble("outstanding_amount")),
+                            R.drawable.ic_wallet,
+                            if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
+                        )
+                    )))
                     val bills = data.optJSONArray("bills") ?: JSONArray()
-                    if (bills.length() > 0) {
-                        form.addView(sectionTitle("Bills"))
-                        for (index in 0 until bills.length()) {
-                            val bill = bills.optJSONObject(index) ?: continue
-                            val row = actionButton(
-                                "${bill.optString("billing_month")} • ${money(bill.optDouble("amount"))}\n" +
-                                    bill.optString("status")
-                            )
-                            row.isAllCaps = false
-                            row.setOnClickListener { showBill(bill.optInt("id")) }
-                            form.addView(row)
-                        }
+                    addRecordList(form, "Bills", bills, listOf("billing_month", "type_label")) { bill ->
+                        showBill(bill.optInt("id"))
                     }
                     addPaymentRows(form, data.optJSONArray("payments"), true)
                     addBack(form)
@@ -1966,6 +2011,14 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val payments = data.optJSONArray("payments") ?: JSONArray()
                 val form = screen("Payments", "${data.optInt("total", payments.length())} payment(s)")
+                form.addView(heroBanner(
+                    title = "Payment history",
+                    message = "Track settlement status and open individual receipts.",
+                    eyebrow = "Collections",
+                    tone = toneTeal,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
                 addPaymentRows(form, payments, true)
                 addBack(form)
                 show(form)
@@ -2680,6 +2733,16 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val form = screen("System logs", "Error logs and SMS queue status")
                 val errors = data.optJSONArray("error_logs") ?: JSONArray()
+                val smsQueue = data.optJSONObject("sms_queue") ?: JSONObject()
+                val pendingSms = smsQueue.optJSONArray("pending")?.length() ?: 0
+                form.addView(heroBanner(
+                    title = if (errors.length() > 0) "System attention needed" else "System queues look stable",
+                    message = "${errors.length()} error log(s) • $pendingSms pending SMS item(s)",
+                    eyebrow = "Operations",
+                    tone = if (errors.length() > 0) toneAmber else toneTeal,
+                    iconRes = if (errors.length() > 0) R.drawable.ic_warning_triangle else R.drawable.ic_circle_check,
+                    compact = true
+                ))
                 form.addView(sectionTitle("Error logs (${errors.length()})"))
                 if (errors.length() == 0) form.addView(empty("No error logs found."))
                 for (index in 0 until errors.length()) {
@@ -2704,7 +2767,6 @@ class MainActivity : AppCompatActivity() {
                     form.addView(deleteAll)
                 }
                 renderNode(form, "Error stats (last 24h)", data.opt("error_stats"))
-                val smsQueue = data.optJSONObject("sms_queue") ?: JSONObject()
                 listOf("pending" to "Pending SMS", "sent" to "Sent SMS", "failed_permanent" to "Failed SMS").forEach { (key, label) ->
                     val rows = smsQueue.optJSONArray(key) ?: JSONArray()
                     form.addView(sectionTitle("$label (${rows.length()})"))
@@ -4665,15 +4727,15 @@ class MainActivity : AppCompatActivity() {
     private fun screen(header: String, subtitle: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         contentDescription = header
-        setPadding(dp(18), 0, dp(18), dp(32))
+        setPadding(dp(20), 0, dp(20), dp(36))
         setBackgroundColor(pageBackground)
         addView(headerBar(header, subtitle), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply {
-            leftMargin = -dp(18)
-            rightMargin = -dp(18)
-            bottomMargin = dp(18)
+            leftMargin = -dp(20)
+            rightMargin = -dp(20)
+            bottomMargin = dp(20)
         })
         backAction?.let { action ->
             addView(backNavigationRow(action))
@@ -4682,19 +4744,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun headerBar(header: String, subtitle: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(14), dp(20), dp(16))
+        setPadding(dp(22), dp(20), dp(22), dp(20))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            val r = dp(18).toFloat()
+            val r = dp(24).toFloat()
             cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
             colors = intArrayOf(navy, navyDark)
             orientation = GradientDrawable.Orientation.LEFT_RIGHT
         }
+        addView(TextView(this@MainActivity).apply {
+            text = getString(R.string.app_name).uppercase(Locale.getDefault())
+            textSize = 11.5f
+            letterSpacing = 0.12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(198, 214, 235))
+        })
         addView(title(header))
         if (subtitle.isNotBlank()) {
             addView(body(subtitle).apply {
                 setTextColor(Color.rgb(198, 214, 235))
-                setPadding(0, dp(3), 0, 0)
+                textSize = 14f
+                setPadding(0, dp(6), 0, 0)
             })
         }
     }
@@ -4707,7 +4777,7 @@ class MainActivity : AppCompatActivity() {
         isFocusable = true
         contentDescription = "Go back"
         setPadding(dp(14), 0, dp(16), 0)
-        background = roundedDrawable(cardBackground, border, 14f)
+        background = roundedDrawable(tintNavy, border, 16f)
         elevation = dp(1).toFloat()
         setOnClickListener { navigateBack(action) }
         addView(iconView(R.drawable.ic_chevron_left, primaryDark, 22))
@@ -4734,17 +4804,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun sectionTitle(value: String) = TextView(this).apply {
         text = value
-        textSize = 18f
+        textSize = 17f
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(textPrimary)
-        setPadding(dp(2), dp(20), 0, dp(10))
+        letterSpacing = 0.01f
+        setPadding(dp(2), dp(22), 0, dp(12))
     }
 
     private fun body(value: String) = TextView(this).apply {
         text = value
         textSize = 15f
         setTextColor(muted)
-        setLineSpacing(dp(2).toFloat(), 1f)
+        setLineSpacing(dp(3).toFloat(), 1f)
     }
 
     private fun iconView(resId: Int, color: Int, sizeDp: Int = 24) = ImageView(this).apply {
@@ -4810,8 +4881,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun empty(value: String) = body(value).apply {
         gravity = Gravity.CENTER
-        setPadding(0, dp(24), 0, dp(24))
-        background = roundedDrawable(cardBackgroundMuted, border, 16f)
+        setPadding(dp(18), dp(24), dp(18), dp(24))
+        background = roundedDrawable(cardBackgroundMuted, border, 18f)
     }
 
     private fun input(hintText: String, type: Int = InputType.TYPE_CLASS_TEXT) =
@@ -4870,13 +4941,13 @@ class MainActivity : AppCompatActivity() {
             textSize = 16f
             setTextColor(textPrimary)
             setHintTextColor(muted)
-            setPadding(dp(16), dp(4), dp(16), dp(4))
-            background = roundedDrawable(cardBackground, border, 14f)
+            setPadding(dp(18), dp(6), dp(18), dp(6))
+            background = roundedDrawable(cardBackground, border, 16f)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(12) }
-            minHeight = dp(58)
+            minHeight = dp(60)
         }
 
     private fun multilineInput(hintText: String) = EditText(this).apply {
@@ -4887,7 +4958,7 @@ class MainActivity : AppCompatActivity() {
         setTextColor(textPrimary)
         setHintTextColor(muted)
         setPadding(dp(16), dp(14), dp(16), dp(14))
-        background = roundedDrawable(cardBackground, border, 14f)
+        background = roundedDrawable(cardBackground, border, 16f)
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -5022,6 +5093,8 @@ class MainActivity : AppCompatActivity() {
             keyListener = null
             isFocusable = false
             isClickable = true
+            setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, R.drawable.ic_chevron_right, 0)
+            compoundDrawablePadding = dp(10)
         }
         if (options.isEmpty()) {
             field.setText(R.string.no_options_available)
@@ -5289,8 +5362,8 @@ class MainActivity : AppCompatActivity() {
         isClickable = true
         isFocusable = true
         minimumHeight = dp(48)
-        background = roundedDrawable(tintBlue, tintBlue, 12f)
-        setPadding(dp(14), dp(10), dp(14), dp(10))
+        background = roundedDrawable(cardBackground, tintBlue, 14f)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
         setOnClickListener { action() }
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -5317,9 +5390,10 @@ class MainActivity : AppCompatActivity() {
         textSize = 15f
         isAllCaps = false
         setTypeface(typeface, Typeface.BOLD)
-        cornerRadius = dp(14)
+        cornerRadius = dp(16)
         backgroundTintList = ColorStateList.valueOf(primary)
-        minHeight = dp(54)
+        elevation = dp(1).toFloat()
+        minHeight = dp(56)
         insetTop = 0
         insetBottom = 0
         layoutParams = LinearLayout.LayoutParams(
@@ -5338,11 +5412,11 @@ class MainActivity : AppCompatActivity() {
         textSize = 15f
         isAllCaps = false
         setTypeface(typeface, Typeface.BOLD)
-        cornerRadius = dp(14)
+        cornerRadius = dp(16)
         strokeWidth = dp(1)
         strokeColor = ColorStateList.valueOf(border)
         backgroundTintList = ColorStateList.valueOf(cardBackground)
-        minHeight = dp(52)
+        minHeight = dp(54)
         insetTop = 0
         insetBottom = 0
         layoutParams = LinearLayout.LayoutParams(
@@ -5361,11 +5435,11 @@ class MainActivity : AppCompatActivity() {
         textSize = 15f
         isAllCaps = false
         setTypeface(typeface, Typeface.BOLD)
-        cornerRadius = dp(14)
+        cornerRadius = dp(16)
         strokeWidth = dp(1)
         strokeColor = ColorStateList.valueOf(danger)
         backgroundTintList = ColorStateList.valueOf(tintRed)
-        minHeight = dp(52)
+        minHeight = dp(54)
         insetTop = 0
         insetBottom = 0
         layoutParams = LinearLayout.LayoutParams(
@@ -5377,8 +5451,9 @@ class MainActivity : AppCompatActivity() {
     private fun card(label: String, value: String, tone: Tone = toneNeutral) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         clipToOutline = true
-        background = roundedDrawable(tone.tint, tone.border, 16f)
-        elevation = dp(1).toFloat()
+        gravity = Gravity.CENTER_VERTICAL
+        background = roundedDrawable(tone.tint, tone.border, 18f)
+        elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -5386,21 +5461,27 @@ class MainActivity : AppCompatActivity() {
         tone.accent?.let { accentColor ->
             addView(View(this@MainActivity).apply {
                 setBackgroundColor(accentColor)
-                layoutParams = LinearLayout.LayoutParams(dp(4), ViewGroup.LayoutParams.MATCH_PARENT)
+                layoutParams = LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT)
             })
         }
-        addView(TextView(this@MainActivity).apply {
-            val content = "$label\n$value"
-            text = SpannableString(content).apply {
-                setSpan(StyleSpan(Typeface.BOLD), 0, label.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(RelativeSizeSpan(0.8f), 0, label.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(ForegroundColorSpan(muted), 0, label.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            textSize = 17f
-            setTextColor(textPrimary)
-            setLineSpacing(dp(3).toFloat(), 1f)
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 12.5f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(muted)
+                letterSpacing = 0.03f
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = value
+                textSize = 17f
+                setTextColor(textPrimary)
+                setLineSpacing(dp(3).toFloat(), 1f)
+                setPadding(0, dp(4), 0, 0)
+            })
         })
     }
 
@@ -5432,18 +5513,18 @@ class MainActivity : AppCompatActivity() {
     private fun summaryCard(label: String, value: String, iconRes: Int, tone: Tone) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         clipToOutline = true
-        setPadding(dp(15), dp(15), dp(15), dp(15))
-        background = roundedDrawable(tone.tint, tone.border, 16f)
-        elevation = dp(1).toFloat()
-        minimumHeight = dp(108)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        background = roundedDrawable(tone.tint, tone.border, 18f)
+        elevation = dp(2).toFloat()
+        minimumHeight = dp(118)
         addView(LinearLayout(this@MainActivity).apply {
-            background = roundedDrawable(cardBackground, cardBackground, 10f)
-            setPadding(dp(7), dp(7), dp(7), dp(7))
-            addView(iconView(iconRes, tone.onTint, 18))
-        }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { bottomMargin = dp(9) })
+            background = roundedDrawable(cardBackground, cardBackground, 12f)
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            addView(iconView(iconRes, tone.onTint, 20))
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { bottomMargin = dp(12) })
         addView(TextView(this@MainActivity).apply {
             text = value
-            textSize = 17f
+            textSize = 18f
             setTextColor(tone.onTint)
             setTypeface(typeface, Typeface.BOLD)
             maxLines = 2
@@ -5462,9 +5543,9 @@ class MainActivity : AppCompatActivity() {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         clipToOutline = true
-        setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = roundedDrawable(cardBackground, border, 16f)
-        elevation = dp(1).toFloat()
+        setPadding(dp(18), dp(16), dp(18), dp(16))
+        background = roundedDrawable(cardBackground, border, 18f)
+        elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -5523,13 +5604,16 @@ class MainActivity : AppCompatActivity() {
         isClickable = true
         isFocusable = true
         minimumHeight = dp(48)
-        setPadding(dp(13), dp(13), dp(13), dp(13))
-        background = roundedDrawable(cardBackground, border, 14f)
-        elevation = dp(1).toFloat()
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        background = roundedDrawable(cardBackground, border, 16f)
+        elevation = dp(2).toFloat()
         setOnClickListener { action() }
-        addView(iconView(iconRes, primaryDark, 20).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { bottomMargin = dp(8) }
-        })
+        addView(LinearLayout(this@MainActivity).apply {
+            background = roundedDrawable(tintNavy, tintNavy, 12f)
+            gravity = Gravity.CENTER
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            addView(iconView(iconRes, primaryDark, 18))
+        }, LinearLayout.LayoutParams(dp(36), dp(36)).apply { bottomMargin = dp(10) })
         addView(TextView(this@MainActivity).apply {
             text = label
             textSize = 13.5f
@@ -5553,9 +5637,9 @@ class MainActivity : AppCompatActivity() {
         isClickable = true
         isFocusable = true
         minimumHeight = dp(50)
-        background = roundedDrawable(cardBackground, border, 14f)
-        setPadding(dp(16), dp(12), dp(14), dp(12))
-        elevation = dp(1).toFloat()
+        background = roundedDrawable(cardBackground, border, 16f)
+        setPadding(dp(16), dp(14), dp(14), dp(14))
+        elevation = dp(2).toFloat()
         contentDescription = if (description.isNotBlank()) "$title. $description" else title
         setOnClickListener { action() }
         layoutParams = LinearLayout.LayoutParams(
@@ -5595,8 +5679,8 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipToOutline = true
-            setPadding(dp(16), dp(15), dp(15), dp(15))
-            background = roundedDrawable(cardBackground, border, 16f)
+            setPadding(dp(16), dp(16), dp(15), dp(16))
+            background = roundedDrawable(cardBackground, border, 18f)
             elevation = dp(2).toFloat()
             isClickable = true
             isFocusable = true
@@ -5607,11 +5691,11 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(11) }
             addView(LinearLayout(this@MainActivity).apply {
-                background = roundedDrawable(tone.tint, tone.tint, 12f)
+                background = roundedDrawable(tone.tint, tone.tint, 14f)
                 gravity = Gravity.CENTER
-                setPadding(dp(10), dp(10), dp(10), dp(10))
+                setPadding(dp(11), dp(11), dp(11), dp(11))
                 addView(iconView(iconRes, tone.onTint, 22))
-            }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginEnd = dp(14) })
+            }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(14) })
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -5628,6 +5712,61 @@ class MainActivity : AppCompatActivity() {
             addView(iconView(R.drawable.ic_chevron_right, muted, 22).apply {
                 (layoutParams as LinearLayout.LayoutParams).marginStart = dp(6)
             })
+        })
+    }
+
+    private fun heroBanner(
+        title: String,
+        message: String,
+        eyebrow: String,
+        tone: Tone,
+        iconRes: Int,
+        compact: Boolean
+    ) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        clipToOutline = true
+        background = roundedDrawable(tone.tint, tone.border, 22f)
+        elevation = dp(2).toFloat()
+        setPadding(dp(18), dp(if (compact) 16 else 18), dp(18), dp(if (compact) 16 else 18))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(18) }
+        addView(LinearLayout(this@MainActivity).apply {
+            background = roundedDrawable(cardBackground, cardBackground, 16f)
+            gravity = Gravity.CENTER
+            setPadding(dp(if (compact) 10 else 12), dp(if (compact) 10 else 12), dp(if (compact) 10 else 12), dp(if (compact) 10 else 12))
+            addView(iconView(iconRes, tone.onTint, if (compact) 22 else 24))
+        }, LinearLayout.LayoutParams(dp(if (compact) 46 else 52), dp(if (compact) 46 else 52)).apply {
+            marginEnd = dp(14)
+        })
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = eyebrow.uppercase(Locale.getDefault())
+                textSize = 11.5f
+                letterSpacing = 0.12f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(tone.onTint)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = if (compact) 20f else 22f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(tone.onTint)
+                setPadding(0, dp(4), 0, 0)
+            })
+            if (message.isNotBlank()) {
+                addView(TextView(this@MainActivity).apply {
+                    text = message
+                    textSize = 14f
+                    setTextColor(tone.onTint)
+                    setLineSpacing(dp(3).toFloat(), 1f)
+                    setPadding(0, dp(6), 0, 0)
+                })
+            }
         })
     }
 
@@ -5860,7 +5999,8 @@ class MainActivity : AppCompatActivity() {
             val row = rows.optJSONObject(index) ?: continue
             parent.addView(card(
                 row.optString(fields.first()).ifBlank { heading.removeSuffix("s") },
-                fields.drop(1).joinToString(" • ") { row.optString(it) }.trim()
+                fields.drop(1).joinToString(" • ") { row.optString(it) }.trim(),
+                inferRecordTone(row)
             ))
         }
     }
@@ -5881,7 +6021,8 @@ class MainActivity : AppCompatActivity() {
                 money(payment.optDouble("amount")),
                 "${payment.optString("status")} • ${payment.optString("payment_method", "M-Pesa")}\n" +
                     listOf(payment.optString("mpesa_receipt"), payment.optString("transaction_date"))
-                        .filter(String::isNotBlank).joinToString(" • ")
+                        .filter(String::isNotBlank).joinToString(" • "),
+                inferRecordTone(payment, toneBlue)
             )
             if (openDetails && payment.optInt("id") > 0) {
                 row.isClickable = true
@@ -5928,7 +6069,7 @@ class MainActivity : AppCompatActivity() {
             val subtitle = keys.joinToString("\n") { key ->
                 "${key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }}: ${formatValue(key, row.opt(key))}"
             }
-            val view = card(title, subtitle)
+            val view = card(title, subtitle, inferRecordTone(row))
             if (onClick != null) {
                 view.isClickable = true
                 view.isFocusable = true
@@ -5942,18 +6083,76 @@ class MainActivity : AppCompatActivity() {
         when (value) {
             is JSONObject -> {
                 if (value.length() == 0) return
-                parent.addView(sectionTitle(label))
+                val scalarCards = mutableListOf<View>()
+                val nestedItems = mutableListOf<Pair<String, Any?>>()
                 value.keys().asSequence().sorted().forEach { key ->
                     val child = value.opt(key)
                     val childLabel = key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }
                     when (child) {
-                        is JSONObject, is JSONArray -> renderNode(parent, childLabel, child)
-                        else -> addField(parent, childLabel, formatValue(key, child))
+                        is JSONObject, is JSONArray -> nestedItems += childLabel to child
+                        else -> if (child != null && child != JSONObject.NULL) {
+                            scalarCards += summaryCard(
+                                childLabel,
+                                formatValue(key, child),
+                                iconForSummaryKey(key),
+                                toneForStatus(child.toString(), toneBlue)
+                            )
+                        }
                     }
                 }
+                if (scalarCards.isNotEmpty()) {
+                    parent.addView(sectionTitle(label))
+                    parent.addView(summaryCardGrid(scalarCards))
+                }
+                nestedItems.forEach { (childLabel, child) -> renderNode(parent, childLabel, child) }
             }
             is JSONArray -> addRecordList(parent, label, value)
             else -> {}
+        }
+    }
+
+    private fun toneForStatus(status: String, default: Tone = toneNeutral): Tone {
+        val normalized = status.lowercase(Locale.getDefault())
+        return when {
+            normalized.contains("fail") || normalized.contains("error") || normalized.contains("reject") || normalized.contains("delete") -> toneRed
+            normalized.contains("pending") || normalized.contains("overdue") || normalized.contains("warning") || normalized.contains("hold") || normalized.contains("inactive") || normalized.contains("suspend") -> toneAmber
+            normalized.contains("paid") || normalized.contains("success") || normalized.contains("complete") || normalized.contains("active") || normalized.contains("sent") || normalized.contains("resolved") || normalized.contains("handled") -> toneTeal
+            else -> default
+        }
+    }
+
+    private fun inferRecordTone(row: JSONObject, default: Tone = toneNeutral): Tone {
+        val statusKeys = listOf("status", "overall_label", "item_label", "approval_status")
+        statusKeys.firstNotNullOfOrNull { key -> row.optString(key).takeIf(String::isNotBlank) }?.let {
+            return toneForStatus(it, default)
+        }
+        val outstanding = row.optDouble("outstanding_amount", Double.NaN)
+        if (!outstanding.isNaN()) {
+            return if (outstanding > 0.01) toneAmber else toneTeal
+        }
+        return default
+    }
+
+    private fun toneForWorkspaceLabel(label: String): Tone {
+        val normalized = label.lowercase(Locale.getDefault())
+        return when {
+            listOf("payment", "collection", "finance", "account", "bill", "invoice").any(normalized::contains) -> toneBlue
+            listOf("approval", "notice", "onboarding", "support", "complaint").any(normalized::contains) -> toneAmber
+            listOf("setting", "system", "activity", "log", "integration").any(normalized::contains) -> toneTeal
+            else -> toneBlue
+        }
+    }
+
+    private fun iconForWorkspaceLabel(label: String): Int {
+        val normalized = label.lowercase(Locale.getDefault())
+        return when {
+            listOf("customer", "staff", "profile", "complaint").any(normalized::contains) -> R.drawable.ic_person
+            listOf("payment", "collection", "budget", "transfer").any(normalized::contains) -> R.drawable.ic_wallet
+            listOf("bill", "invoice", "report", "ledger", "statement", "receipt").any(normalized::contains) -> R.drawable.ic_receipt
+            listOf("meter", "reading").any(normalized::contains) -> R.drawable.ic_meter
+            listOf("support", "blog").any(normalized::contains) -> R.drawable.ic_support
+            listOf("system", "setting", "activity", "log", "permission").any(normalized::contains) -> R.drawable.ic_admin
+            else -> R.drawable.ic_circle_check
         }
     }
 
