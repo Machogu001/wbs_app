@@ -729,6 +729,8 @@ class MainActivity : AppCompatActivity() {
                 })
             }
 
+            addRegistrationTermsSection(form, meta)
+
             form.addView(sectionTitle("Password"))
             form.addView(labeledField("Password", password))
             form.addView(labeledField("Confirm password", confirmPassword))
@@ -759,6 +761,47 @@ class MainActivity : AppCompatActivity() {
             }
         }
         show(form)
+    }
+
+    private fun addRegistrationTermsSection(parent: LinearLayout, meta: JSONObject) {
+        val terms = meta.optJSONObject("terms_conditions") ?: JSONObject()
+        val preferredFormat = terms.optString("preferred_format").ifBlank { "sections" }
+        val sections = terms.optJSONArray("sections")
+        val html = terms.optString("html").ifBlank { meta.optString("terms_conditions_html") }
+        val text = terms.optString("text").ifBlank {
+            terms.optString("content").ifBlank { meta.optString("terms_conditions_content") }
+        }
+        parent.addView(sectionPanel(
+            title = "Terms & conditions",
+            description = "Review the current service terms before submitting your registration."
+        ) {
+            when {
+                preferredFormat == "sections" && sections != null && sections.length() > 0 -> {
+                    for (index in 0 until sections.length()) {
+                        val section = sections.optJSONObject(index) ?: continue
+                        val heading = section.optString("title")
+                        val content = section.optString("content")
+                        if (heading.isBlank() && content.isBlank()) continue
+                        addView(card(heading.ifBlank { "Terms & Conditions" }, content))
+                    }
+                }
+                html.isNotBlank() -> {
+                    addView(TextView(this@MainActivity).apply {
+                        text = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT)
+                        textSize = 16f
+                        setTextColor(textPrimary)
+                        setPadding(dp(16), dp(16), dp(16), dp(16))
+                        background = roundedDrawable(cardBackground, border, 14f)
+                        setTextIsSelectable(true)
+                    }, LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dp(14) })
+                }
+                text.isNotBlank() -> addView(card("Terms & Conditions", text))
+                else -> addView(empty("Terms and conditions are not available right now."))
+            }
+        })
     }
 
     private fun validateRegistrationDraft(
@@ -1135,6 +1178,9 @@ class MainActivity : AppCompatActivity() {
         val screen = data.optJSONObject("screen") ?: JSONObject()
         val user = currentUser
         val name = user?.optString("full_name")?.takeIf(String::isNotBlank) ?: "customer"
+        val latestBillsSection = screenSection(screen, "latest_bills")
+        val latestPaymentSection = screenSection(screen, "latest_payment")
+        val metersSection = screenSection(screen, "meters")
         val form = screen(screen.optString("title").ifBlank { "My Water Bill" }, "Welcome back")
         val outstanding = summary.optDouble("outstanding_amount")
         val heroMessage = buildString {
@@ -1181,6 +1227,32 @@ class MainActivity : AppCompatActivity() {
                 "Sign out" to ::performSignOut
             ))
         })
+        val primaryAction = mobileActionSpec(screen.optJSONObject("primary_action"))
+        val secondaryActions = (screen.optJSONArray("secondary_actions") ?: JSONArray())
+            .let { actions ->
+                buildList {
+                    for (index in 0 until actions.length()) {
+                        val action = mobileActionSpec(actions.optJSONObject(index)) ?: continue
+                        if (action.first.equals("Profile", ignoreCase = true)) continue
+                        add(action)
+                    }
+                }
+            }
+        if (primaryAction != null || secondaryActions.isNotEmpty()) {
+            form.addView(sectionPanel(
+                title = "Recommended next step",
+                description = "Use the server-guided actions for the quickest route through your account tasks."
+            ) {
+                primaryAction?.let { (label, action) ->
+                    addView(actionButton(label).apply {
+                        setOnClickListener { action() }
+                    })
+                }
+                if (secondaryActions.isNotEmpty()) {
+                    addView(buttonRow(*secondaryActions.toTypedArray()))
+                }
+            })
+        }
         val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
         val accountSummaryCards = if (summaryCards.isNotEmpty()) {
             summaryCards
@@ -1218,19 +1290,51 @@ class MainActivity : AppCompatActivity() {
         ) {
             addView(summaryCardGrid(accountSummaryCards))
         })
-        form.addView(sectionTitle("Recent activity"))
-        addRecordList(form, "Latest bills", data.optJSONArray("latest_bills"), listOf("billing_month", "type_label")) { row ->
-            showBill(row.optInt("id"))
-        }
-        data.optJSONObject("latest_payment")?.let { latestPayment ->
-            addPaymentRows(form, JSONArray().put(latestPayment), true)
+        form.addView(sectionTitle(latestBillsSection?.optString("title").ifBlank { "Latest bills" }))
+        addRecordList(
+            parent = form,
+            heading = latestBillsSection?.optString("title").ifBlank { "Latest bills" },
+            rows = data.optJSONArray("latest_bills"),
+            titleFields = listOf("type_label", "billing_month"),
+            onClick = { row -> showBill(row.optInt("id")) },
+            emptyState = latestBillsSection?.optString("empty_state").ifBlank { "No bills available yet." },
+            showHeading = false
+        )
+        val latestPayment = data.optJSONObject("latest_payment")
+        form.addView(sectionTitle(latestPaymentSection?.optString("title").ifBlank { "Latest payment" }))
+        if (latestPayment == null) {
+            form.addView(empty(latestPaymentSection?.optString("empty_state").ifBlank { "No payment has been recorded yet." }))
+        } else {
+            val paymentCard = card(
+                money(latestPayment.optDouble("amount")),
+                listOf(
+                    latestPayment.optString("status"),
+                    latestPayment.optString("payment_method", "M-Pesa"),
+                    latestPayment.optString("mpesa_receipt"),
+                    latestPayment.optString("transaction_date")
+                ).filter(String::isNotBlank).joinToString(" • "),
+                inferRecordTone(latestPayment, toneBlue)
+            )
+            if (latestPayment.optInt("id") > 0) {
+                paymentCard.isClickable = true
+                paymentCard.isFocusable = true
+                paymentCard.setOnClickListener { showPayment(latestPayment.optInt("id")) }
+            }
+            form.addView(paymentCard)
         }
         form.addView(sectionPanel(
-            title = "Meters and service points",
+            title = metersSection?.optString("title").ifBlank { "Meters and service points" },
             description = "Track active meters and move quickly into readings or support workflows."
         ) {
-            addRecordList(this, "Meters", data.optJSONArray("meters"), listOf("meter_number", "meter_label"))
-        })
+            addRecordList(
+                parent = this,
+                heading = metersSection?.optString("title").ifBlank { "Meters" },
+                rows = data.optJSONArray("meters"),
+                titleFields = listOf("meter_number", "meter_label"),
+                emptyState = metersSection?.optString("empty_state").ifBlank { "No active meters found." },
+                showHeading = false
+            )
+        }
         form.addView(sectionPanel(
             title = "Quick actions",
             description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
@@ -1255,6 +1359,37 @@ class MainActivity : AppCompatActivity() {
             addWorkspace(form, "System administration", "Staff access, permissions, settings and audit logs", R.drawable.ic_admin, ::showSystemWorkspace)
         }
         show(form)
+    }
+
+    private fun screenSection(screen: JSONObject, key: String): JSONObject? {
+        val sections = screen.optJSONArray("sections") ?: return null
+        for (index in 0 until sections.length()) {
+            val section = sections.optJSONObject(index) ?: continue
+            if (section.optString("key") == key) {
+                return section
+            }
+        }
+        return null
+    }
+
+    private fun mobileActionSpec(action: JSONObject?, contextUser: JSONObject? = null): Pair<String, () -> Unit>? {
+        if (action == null) return null
+        val label = action.optString("label").trim()
+        if (label.isBlank()) return null
+        val callback = when (action.optString("target").trim()) {
+            "/api/mobile/registration_payment.php" -> ::loadRegistrationPayment
+            "/api/mobile/bills.php" -> { { showBills() } }
+            "/api/mobile/payments.php" -> ::showPayments
+            "/api/mobile/me.php" -> ::showProfile
+            "/api/mobile/profile_update.php" -> contextUser?.let { user -> { showEditProfile(user) } }
+            "/api/mobile/statement.php" -> ::showStatement
+            "/api/mobile/meters.php" -> ::showMeters
+            "/api/mobile/dashboard.php" -> ::showDashboard
+            "/api/mobile/change_password.php" -> { { showChangePassword() } }
+            "/api/mobile/theme.php" -> ::showProfile
+            else -> null
+        } ?: return null
+        return label to callback
     }
 
     private fun showCustomersWorkspace() = showWorkspace(
@@ -1447,6 +1582,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderProfile(profileData: JSONObject, user: JSONObject, themePreference: String, availablePreferences: List<String>) {
         val screen = profileData.optJSONObject("screen") ?: JSONObject()
+        val userSection = screenSection(screen, "user")
+        val metersSection = screenSection(screen, "meters")
         val linkedMeters = user.optJSONArray("meters") ?: JSONArray()
         val form = screen(screen.optString("title").ifBlank { "Profile" }, user.optString("full_name"))
         form.addView(heroBanner(
@@ -1470,23 +1607,46 @@ class MainActivity : AppCompatActivity() {
             val alert = alerts.optJSONObject(index) ?: continue
             addScreenAlert(form, alert)
         }
+        val profileActions = mutableListOf<Pair<String, () -> Unit>>()
+        mobileActionSpec(screen.optJSONObject("primary_action"), user)?.let(profileActions::add)
+        val secondaryActions = screen.optJSONArray("secondary_actions") ?: JSONArray()
+        for (index in 0 until secondaryActions.length()) {
+            val actionObject = secondaryActions.optJSONObject(index) ?: continue
+            if (actionObject.optString("target") == "/api/mobile/theme.php") continue
+            mobileActionSpec(actionObject, user)?.let(profileActions::add)
+        }
+        if (profileActions.isNotEmpty()) {
+            form.addView(sectionPanel(
+                title = "Profile actions",
+                description = "Use the same top-level account actions exposed by the server."
+            ) {
+                val primary = profileActions.firstOrNull()
+                primary?.let { (label, action) ->
+                    addView(actionButton(label).apply {
+                        setOnClickListener { action() }
+                    })
+                }
+                val secondary = profileActions.drop(1)
+                if (secondary.isNotEmpty()) {
+                    addView(buttonRow(*secondary.toTypedArray()))
+                }
+            })
+        }
         form.addView(sectionPanel(
-            title = "Account details",
-            description = "Core identity and service information, grouped like the web profile page."
+            title = userSection?.optString("title").ifBlank { "Account details" },
+            description = "Core identity and service information returned by the profile endpoint."
         ) {
-            addField(this, "Account", user.optString("account_number"))
-            addField(this, "Username", user.optString("username"))
-            addField(this, "Role", user.optString("role"))
-            addField(this, "Connection type", user.optString("connection_type"))
-            addField(this, "Status", user.optString("status"))
-        })
-        form.addView(sectionPanel(
-            title = "Contact information",
-            description = "These details are used for statements, notifications and support follow-up."
-        ) {
-            addField(this, "Phone", user.optString("phone_number"))
-            addField(this, "Email", user.optString("email"))
-            addField(this, "Address", user.optString("address"))
+            if (userSection != null && userSection.optJSONArray("fields")?.length() ?: 0 > 0) {
+                addProfileFields(this, userSection.optJSONArray("fields"), user, themePreference)
+            } else {
+                addField(this, "Full name", user.optString("full_name"))
+                addField(this, "Account", user.optString("account_number"))
+                addField(this, "Phone", user.optString("phone_number"))
+                addField(this, "Email", user.optString("email"))
+                addField(this, "Address", user.optString("address"))
+                addField(this, "Connection type", user.optString("connection_type"))
+                addField(this, "Theme preference", themePreferenceLabel(themePreference))
+            }
         })
         form.addView(sectionPanel(
             title = "Appearance",
@@ -1500,21 +1660,17 @@ class MainActivity : AppCompatActivity() {
             ) { selected -> updateThemePreference(selected, user) })
         })
         form.addView(sectionPanel(
-            title = "Security and updates",
-            description = "Keep your sign-in details and account information current."
-        ) {
-            val edit = actionButton("Edit profile")
-            edit.setOnClickListener { showEditProfile(user) }
-            addView(edit)
-            val password = secondaryButton("Change password")
-            password.setOnClickListener { showChangePassword() }
-            addView(password)
-        })
-        form.addView(sectionPanel(
-            title = "Linked meters",
+            title = metersSection?.optString("title").ifBlank { "Linked meters" },
             description = "Meters associated with this account and available for readings or service checks."
         ) {
-            addRecordList(this, "Linked meters", linkedMeters, listOf("meter_number", "meter_label"))
+            addRecordList(
+                parent = this,
+                heading = metersSection?.optString("title").ifBlank { "Linked meters" },
+                rows = linkedMeters,
+                titleFields = listOf("meter_number", "meter_label"),
+                emptyState = metersSection?.optString("empty_state").ifBlank { "No linked meters found." },
+                showHeading = false
+            )
         })
         addBack(form)
         show(form)
@@ -1771,25 +1927,30 @@ class MainActivity : AppCompatActivity() {
             load()
     }
 
-    private fun showBills(status: String = "", limit: Int = 100) {
+    private fun showBills(status: String = "", limit: Int = 100, page: Int = 1) {
         childScreen()
         showLoading("Loading bills")
-        val path = api.query("bills.php", mapOf("limit" to limit.toString(), "status" to status))
+        val path = api.query("bills.php", mapOf("limit" to limit.toString(), "status" to status, "page" to page.toString()))
         api.request(path) { result ->
             onResult(result, "Could not load bills") { response ->
                 val data = response.data()
                 val bills = data.optJSONArray("bills") ?: JSONArray()
                 val screen = data.optJSONObject("screen") ?: JSONObject()
+                val billSection = screenSection(screen, "bills")
                 val filters = screen.optJSONArray("filters") ?: JSONArray()
-                val statusOptions = filters.optJSONObject(0)?.optJSONArray("options")?.toFlexibleOptionPairs()
+                val statusFilter = filters.optJSONObject(0)
+                val limitFilter = filters.optJSONObject(1)
+                val statusOptions = statusFilter?.optJSONArray("options")?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("" to "All Bills", "pending" to "Pending", "paid" to "Paid", "overdue" to "Overdue", "cancelled" to "Cancelled")
-                val limitOptions = filters.optJSONObject(1)?.optJSONArray("options")?.toFlexibleOptionPairs()
+                val limitOptions = limitFilter?.optJSONArray("options")?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("10" to "10", "20" to "20", "50" to "50", "100" to "100")
-                val statusField = dropdownInput("Bill status", statusOptions, status)
-                val limitField = dropdownInput("Rows", limitOptions, limit.toString())
-                val form = screen(screen.optString("title").ifBlank { "Bills" }, "${data.optInt("total", bills.length())} bill(s)")
+                val statusField = dropdownInput(statusFilter?.optString("label").ifBlank { "Bill status" }, statusOptions, status)
+                val limitField = dropdownInput(limitFilter?.optString("label").ifBlank { "Rows" }, limitOptions, limit.toString())
+                val pagination = screen.optJSONObject("pagination") ?: JSONObject()
+                val totalBills = pagination.optInt("total", data.optInt("total", bills.length()))
+                val form = screen(screen.optString("title").ifBlank { "Bills" }, "$totalBills bill(s)")
                 val outstandingTotal = (0 until bills.length()).sumOf { index ->
                     bills.optJSONObject(index)?.optDouble("outstanding_amount") ?: 0.0
                 }
@@ -1818,16 +1979,17 @@ class MainActivity : AppCompatActivity() {
                     addView(buttonRow(
                         "Apply filters" to {
                             childScreen()
-                            showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit)
+                            showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit, 1)
                         },
                         "Clear" to {
                             childScreen()
-                            showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100)
+                            showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100, 1)
                         }
                     ))
                 })
-                form.addView(sectionTitle("Bills in view"))
-                if (bills.length() == 0) form.addView(empty("No bills found."))
+                form.addView(sectionTitle(billSection?.optString("title").ifBlank { "Bills in view" }))
+                if (bills.length() == 0) form.addView(empty(billSection?.optString("empty_state").ifBlank { "No bills found." }))
+                val itemActions = billSection?.optJSONArray("item_actions") ?: JSONArray()
                 for (index in 0 until bills.length()) {
                     val bill = bills.optJSONObject(index) ?: continue
                     val view = card(
@@ -1843,11 +2005,35 @@ class MainActivity : AppCompatActivity() {
                     view.isFocusable = true
                     view.setOnClickListener { showBill(bill.optInt("id")) }
                     form.addView(view)
+                    for (actionIndex in 0 until itemActions.length()) {
+                        val action = itemActions.optJSONObject(actionIndex) ?: continue
+                        if (action.optString("type") == "link") {
+                            addUrlButton(
+                                form,
+                                action.optString("label").ifBlank { "Open link" },
+                                bill.optString(action.optString("field"))
+                            )
+                        }
+                    }
                 }
-                screen.optJSONObject("primary_action")?.optString("label")?.takeIf(String::isNotBlank)?.let { label ->
-                    val action = secondaryButton(label)
-                    action.setOnClickListener { showDashboard() }
-                    form.addView(action)
+                if (pagination.optBoolean("has_previous_page") || pagination.optBoolean("has_next_page")) {
+                    val pageValue = pagination.optInt("page", page)
+                    val limitValue = pagination.optInt("limit", limit)
+                    val buttons = mutableListOf<Pair<String, () -> Unit>>()
+                    if (pagination.optBoolean("has_previous_page")) {
+                        buttons += "Previous" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue - 1) }
+                    }
+                    if (pagination.optBoolean("has_next_page")) {
+                        buttons += "Next" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue + 1) }
+                    }
+                    if (buttons.isNotEmpty()) {
+                        form.addView(buttonRow(*buttons.toTypedArray()))
+                    }
+                }
+                mobileActionSpec(screen.optJSONObject("primary_action"))?.let { (label, action) ->
+                    val button = secondaryButton(label)
+                    button.setOnClickListener { action() }
+                    form.addView(button)
                 }
                 addBack(form)
                 show(form)
@@ -2835,33 +3021,40 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load collections") { response ->
                 val data = response.data()
                 val summary = data.optJSONObject("summary") ?: JSONObject()
+                val fieldMetadata = data.optJSONObject("field_metadata") ?: JSONObject()
                 val periodOptions = data.optJSONArray("period_options")?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("7" to "Last 7 days", "14" to "Last 14 days", "30" to "Last 30 days", "60" to "Last 60 days", "90" to "Last 90 days")
-                val limitOptions = data.optJSONObject("field_metadata")
-                    ?.optJSONObject("limit")
+                val limitOptions = fieldMetadata
+                    .optJSONObject("limit")
                     ?.optJSONArray("options")
                     ?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("10" to "10 records", "20" to "20 records", "50" to "50 records", "100" to "100 records")
-                val periodField = dropdownInput("Period", periodOptions, data.optInt("period_days", days).toString())
-                val limitField = dropdownInput("Rows", limitOptions, limit.toString())
+                val paymentMethodLabels = data.optJSONArray("payment_method_options")?.toFlexibleOptionPairs()?.toMap().orEmpty()
+                val periodField = dropdownInput(fieldMetadata.optJSONObject("days")?.optString("label").ifBlank { "Period" }, periodOptions, data.optInt("period_days", days).toString())
+                val limitField = dropdownInput(fieldMetadata.optJSONObject("limit")?.optString("label").ifBlank { "Rows" }, limitOptions, limit.toString())
                 val form = screen("Collections", "Last ${data.optInt("period_days", 30)} days")
-                form.addView(periodField)
-                form.addView(limitField)
-                form.addView(buttonRow(
-                    "Refresh" to {
-                        childScreen()
-                        showCollections(
-                            periodField.tag?.toString()?.toIntOrNull() ?: data.optInt("period_days", days),
-                            limitField.tag?.toString()?.toIntOrNull() ?: limit
-                        )
-                    },
-                    "Last 30 days" to {
-                        childScreen()
-                        showCollections(30, limitField.tag?.toString()?.toIntOrNull() ?: 100)
-                    }
-                ))
+                form.addView(sectionPanel(
+                    title = "Collections filters",
+                    description = "Use the server-provided period and row controls to inspect collection performance."
+                ) {
+                    addView(periodField)
+                    addView(limitField)
+                    addView(buttonRow(
+                        "Refresh" to {
+                            childScreen()
+                            showCollections(
+                                periodField.tag?.toString()?.toIntOrNull() ?: data.optInt("period_days", days),
+                                limitField.tag?.toString()?.toIntOrNull() ?: limit
+                            )
+                        },
+                        "Last 30 days" to {
+                            childScreen()
+                            showCollections(30, limitField.tag?.toString()?.toIntOrNull() ?: 100)
+                        }
+                    ))
+                })
                 val summaryCards = summaryCardViews(summary, data.optJSONArray("summary_cards"))
                 if (summaryCards.isNotEmpty()) {
                     form.addView(summaryCardGrid(summaryCards))
@@ -2871,12 +3064,27 @@ class MainActivity : AppCompatActivity() {
                     form.addView(card("Failed", money(summary.optDouble("failed_collected"))))
                     form.addView(card("Customers served", summary.optInt("customers_served").toString()))
                 }
-                addJsonRows(
-                    form,
-                    "By payment method",
-                    data.optJSONArray("by_payment_method"),
-                    listOf("payment_method", "payment_count", "total_amount")
-                )
+                val methodRows = data.optJSONArray("by_payment_method") ?: JSONArray()
+                form.addView(sectionPanel(
+                    title = "By payment method",
+                    description = "Completed collections grouped using the backend's supported payment method list."
+                ) {
+                    if (methodRows.length() == 0) {
+                        addView(empty("No payment-method totals are available for this period."))
+                    }
+                    for (index in 0 until methodRows.length()) {
+                        val row = methodRows.optJSONObject(index) ?: continue
+                        val key = row.optString("payment_method")
+                        addView(card(
+                            paymentMethodLabels[key] ?: key.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                            listOf(
+                                "Payments: ${row.optInt("payment_count")}",
+                                "Total: ${money(row.optDouble("total_amount"))}"
+                            ).joinToString(" • "),
+                            toneBlue
+                        ))
+                    }
+                })
                 addPaymentRows(form, data.optJSONArray("recent_payments"))
                 addBack(form)
                 show(form)
@@ -3553,7 +3761,7 @@ class MainActivity : AppCompatActivity() {
                 for (index in 0 until errors.length()) {
                     val err = errors.optJSONObject(index) ?: continue
                     val id = err.optInt("id")
-                    val errorMessage = err.optString("message").ifBlank { err.optString("error_message") }
+                    val errorMessage = err.optString("error_message").ifBlank { err.optString("message") }
                     form.addView(card(err.optString("service", "Error"), "${errorMessage}\n${err.optString("created_at")}"))
                     val delete = destructiveButton("Delete this log")
                     delete.setOnClickListener {
@@ -5026,9 +5234,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTariffPlanEditor() {
         backAction = ::showSettings
+        val categoryOptions = listOf(
+            "all" to "All connections",
+            "domestic" to "Domestic",
+            "commercial" to "Commercial",
+            "industrial" to "Industrial"
+        )
         val name = input("Tariff name")
-        val category = input("Category: all, domestic, commercial or industrial").apply { setText(R.string.tariff_category_all) }
-        val effectiveFrom = input("Effective from YYYY-MM-DD").apply { setText(today()) }
+        val category = dropdownInput("Tariff category", categoryOptions, "all")
+        val effectiveFrom = datePickerInput("Effective from", today())
         val baseRate = input("Base rate per unit", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val serviceCharge = input("Service charge", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val vatRate = input("VAT rate %", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
@@ -5047,7 +5261,7 @@ class MainActivity : AppCompatActivity() {
                 "admin/settings.php", "POST",
                 JSONObject().put("action", "save_tariff_plan").put("tariff_plan_id", 0)
                     .put("tariff_name", name.text.toString().trim())
-                    .put("tariff_category", category.text.toString().trim().lowercase())
+                    .put("tariff_category", category.tag?.toString().orEmpty())
                     .put("effective_from", effectiveFrom.text.toString().trim())
                     .put("base_rate_per_unit", baseRate.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_service_charge", serviceCharge.text.toString().toDoubleOrNull() ?: 0.0)
@@ -5075,34 +5289,69 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val termsText = data.optString("terms_conditions_content")
                 val termsTemplate = data.optString("terms_conditions_template").ifBlank { termsText }
+                val displayMetadata = data.optJSONObject("display_metadata") ?: JSONObject()
+                val availableFormats = displayMetadata.optJSONArray("available_formats")?.let { options ->
+                    (0 until options.length()).mapNotNull { index -> options.optString(index).takeIf(String::isNotBlank) }
+                }?.ifEmpty { null } ?: listOf("sections", "text", "html")
+                var selectedFormat = displayMetadata.optString("preferred_format").takeIf { it in availableFormats }
+                    ?: availableFormats.firstOrNull().orEmpty().ifBlank { "sections" }
+                val sampleTemplates = data.optJSONObject("sample_templates") ?: JSONObject()
                 val form = screen("Terms & Conditions", "Customer terms and conditions")
-                val sections = data.optJSONArray("rendered_terms_sections")
-                if (sections != null && sections.length() > 0) {
-                    for (index in 0 until sections.length()) {
-                        val section = sections.optJSONObject(index) ?: continue
-                        val heading = section.optString("title")
-                        val text = section.optString("content")
-                        if (heading.isBlank() && text.isBlank()) continue
-                        form.addView(card(heading.ifBlank { "Terms & Conditions" }, text))
+                if (availableFormats.size > 1) {
+                    form.addView(sectionPanel(
+                        title = "Display format",
+                        description = "Preview the terms using the server's available presentation formats."
+                    ) {
+                        addView(buttonRow(*availableFormats.map { format ->
+                            format.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() } to {
+                                selectedFormat = format
+                                showTermsConditions()
+                            }
+                        }.toTypedArray()))
+                    })
+                }
+                when {
+                    selectedFormat == "sections" -> {
+                        val sections = data.optJSONArray("rendered_terms_sections")
+                        if (sections != null && sections.length() > 0) {
+                            for (index in 0 until sections.length()) {
+                                val section = sections.optJSONObject(index) ?: continue
+                                val heading = section.optString("title")
+                                val text = section.optString("content")
+                                if (heading.isBlank() && text.isBlank()) continue
+                                form.addView(card(heading.ifBlank { "Terms & Conditions" }, text))
+                            }
+                        } else {
+                            form.addView(empty("Terms and conditions have not been added yet."))
+                        }
                     }
-                } else if (termsText.isNotBlank()) {
-                    val formattedTerms = TextView(this).apply {
-                        text = Html.fromHtml(
-                            data.optString("rendered_terms").ifBlank { termsText },
-                            Html.FROM_HTML_MODE_COMPACT
-                        )
-                        textSize = 16f
-                        setTextColor(textPrimary)
-                        setPadding(dp(16), dp(16), dp(16), dp(16))
-                        background = roundedDrawable(cardBackground, border, 14f)
-                        setTextIsSelectable(true)
+                    selectedFormat == "text" -> {
+                        val plainText = data.optString("rendered_terms_text").ifBlank { termsText }
+                        if (plainText.isBlank()) {
+                            form.addView(empty("Terms and conditions have not been added yet."))
+                        } else {
+                            form.addView(card("Terms & Conditions", plainText))
+                        }
                     }
-                    form.addView(formattedTerms, LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply { bottomMargin = dp(14) })
-                } else {
-                    form.addView(empty("Terms and conditions have not been added yet."))
+                    else -> {
+                        val htmlContent = data.optString("rendered_terms").ifBlank { termsText }
+                        if (htmlContent.isBlank()) {
+                            form.addView(empty("Terms and conditions have not been added yet."))
+                        } else {
+                            val formattedTerms = TextView(this).apply {
+                                text = Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_COMPACT)
+                                textSize = 16f
+                                setTextColor(textPrimary)
+                                setPadding(dp(16), dp(16), dp(16), dp(16))
+                                background = roundedDrawable(cardBackground, border, 14f)
+                                setTextIsSelectable(true)
+                            }
+                            form.addView(formattedTerms, LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            ).apply { bottomMargin = dp(14) })
+                        }
+                    }
                 }
                 val edit = secondaryButton("Edit terms and conditions")
                 form.addView(edit)
@@ -5119,6 +5368,34 @@ class MainActivity : AppCompatActivity() {
                     val editor = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
                         setPadding(dp(20), dp(8), dp(20), 0)
+                        if (sampleTemplates.length() > 0) {
+                            addView(secondaryButton("Load sample template").apply {
+                                setOnClickListener {
+                                    val sampleKeys = mutableListOf<String>()
+                                    val sampleLabels = mutableListOf<String>()
+                                    val iterator = sampleTemplates.keys()
+                                    while (iterator.hasNext()) {
+                                        val key = iterator.next()
+                                        val sample = sampleTemplates.optJSONObject(key) ?: continue
+                                        sampleKeys += key
+                                        sampleLabels += listOf(
+                                            sample.optString("label").ifBlank { key.replace('_', ' ') },
+                                            sample.optString("description").takeIf(String::isNotBlank)
+                                        ).filter(String::isNotBlank).joinToString(" • ")
+                                    }
+                                    if (sampleKeys.isEmpty()) return@setOnClickListener
+                                    AlertDialog.Builder(this@MainActivity)
+                                        .setTitle("Choose template sample")
+                                        .setItems(sampleLabels.toTypedArray()) { _, which ->
+                                            val sample = sampleTemplates.optJSONObject(sampleKeys[which]) ?: return@setItems
+                                            content.setText(sample.optString("content"))
+                                            content.setSelection(content.text.length)
+                                        }
+                                        .setNegativeButton("Cancel", null)
+                                        .show()
+                                }
+                            })
+                        }
                         addView(content)
                         addView(password)
                     }
@@ -5178,6 +5455,7 @@ class MainActivity : AppCompatActivity() {
         api.request(path) { result ->
             onResult(result, "Could not load payments workspace") { response ->
                 val data = response.data()
+                val canReceivePayments = data.optBoolean("can_receive_payments", true)
                 val currentUser = data.optJSONObject("current_user")
                 val searchHint = data.optJSONObject("field_metadata")
                     ?.optJSONObject("account_number")
@@ -5223,14 +5501,18 @@ class MainActivity : AppCompatActivity() {
                             val bill = bills.optJSONObject(index) ?: continue
                             val billId = bill.optInt("id")
                             addView(card("${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due", bill.optString("status"), toneForStatus(bill.optString("status"), toneBlue)))
-                            addView(buttonRow(
-                                "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
-                                "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
-                            ))
+                            if (canReceivePayments) {
+                                addView(buttonRow(
+                                    "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
+                                    "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
+                                ))
+                            }
                         }
-                        val recordBalance = secondaryButton("Record payment to account balance")
-                        recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
-                        addView(recordBalance)
+                        if (canReceivePayments) {
+                            val recordBalance = secondaryButton("Record payment to account balance")
+                            recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
+                            addView(recordBalance)
+                        }
                     })
                     val payments = data.optJSONArray("payments") ?: JSONArray()
                     form.addView(sectionPanel(
@@ -5261,7 +5543,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showManualPaymentForm(accountNumber: String, billId: Int, target: String, paymentWorkspaceData: JSONObject) {
-        backAction = { showPaymentsWorkspace() }
+        backAction = { loadPaymentsWorkspace(accountNumber) }
         val targetOptions = fieldOptions(
             paymentWorkspaceData,
             "payment_target",
@@ -5282,33 +5564,68 @@ class MainActivity : AppCompatActivity() {
                 "other" to "Other"
             )
         )
+        val billOptions = fieldSourceOptions(
+            paymentWorkspaceData,
+            "bill_id",
+            paymentWorkspaceData.optJSONArray("bills")
+        )
+        val targetLabel = fieldLabel(paymentWorkspaceData, "payment_target", "Payment target")
+        val billLabel = fieldLabel(paymentWorkspaceData, "bill_id", "Invoice")
+        val amountLabel = fieldLabel(paymentWorkspaceData, "amount", "Amount")
+        val methodLabel = fieldLabel(paymentWorkspaceData, "payment_method", "Payment method")
+        val referenceLabel = fieldLabel(paymentWorkspaceData, "payment_reference", "Payment reference")
+        val paidDateLabel = fieldLabel(paymentWorkspaceData, "paid_date", "Paid date")
+        val paidTimeLabel = fieldLabel(paymentWorkspaceData, "paid_time", "Paid time")
         val targetField = dropdownInput(
-            "Payment target",
+            targetLabel,
             targetOptions,
             fieldDefaultValue(paymentWorkspaceData, "payment_target", target)
         )
-        val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val method = dropdownInput("Payment method", methodOptions, fieldDefaultValue(paymentWorkspaceData, "payment_method", "cash"))
-        val reference = input("Payment reference")
-        val paidDate = datePickerInput("Paid date", fieldDefaultValue(paymentWorkspaceData, "paid_date", today()))
-        val paidTime = input("Paid time HH:MM (optional)")
+        val billField = if (billOptions.isNotEmpty()) {
+            dropdownInput(
+                billLabel,
+                billOptions,
+                billId.takeIf { it > 0 }?.toString().orEmpty()
+            )
+        } else null
+        val amount = input(amountLabel, InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val method = dropdownInput(methodLabel, methodOptions, fieldDefaultValue(paymentWorkspaceData, "payment_method", "cash"))
+        val reference = input(referenceLabel)
+        val paidDate = datePickerInput(
+            paidDateLabel,
+            fieldDefaultValue(paymentWorkspaceData, "paid_date", today()),
+            fieldPickerMode(paymentWorkspaceData, "paid_date", "date")
+        )
+        val paidTime = datePickerInput(
+            paidTimeLabel,
+            fieldDefaultValue(paymentWorkspaceData, "paid_time", ""),
+            fieldPickerMode(paymentWorkspaceData, "paid_time", "time")
+        )
         val phone = input("Phone number (optional)", InputType.TYPE_CLASS_PHONE)
         val note = multilineInput("Note (optional)")
         val save = actionButton("Record payment")
         val form = screen("Record payment", "$accountNumber • target: $target")
-        listOf(targetField, amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
+        form.addView(targetField)
+        billField?.let(form::addView)
+        listOf(amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
         addBack(form)
         save.setOnClickListener {
             if (amount.text.isBlank() || paidDate.text.isBlank()) {
                 toast("Enter the amount and paid date.")
                 return@setOnClickListener
             }
+            val selectedTarget = targetField.tag?.toString().orEmpty()
+            val selectedBillId = billField?.tag?.toString()?.toIntOrNull() ?: billId
+            if (selectedTarget == "invoice" && selectedBillId <= 0) {
+                toast("Choose the invoice to receipt.")
+                return@setOnClickListener
+            }
             val body = JSONObject()
                 .put("action", "manual_payment")
                 .put("account_number", accountNumber)
-                .put("bill_id", billId)
-                .put("payment_target", targetField.tag as String)
-                .put("payment_method", method.tag as String)
+                .put("bill_id", selectedBillId)
+                .put("payment_target", selectedTarget)
+                .put("payment_method", method.tag?.toString().orEmpty())
                 .put("payment_reference", reference.text.toString().trim())
                 .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
                 .put("paid_date", paidDate.text.toString().trim())
@@ -5328,7 +5645,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCreditNoteForm(accountNumber: String, billId: Int) {
         backAction = { showPaymentsWorkspace() }
-        val type = input("Credit type: full or partial").apply { setText(R.string.credit_type_full) }
+        val type = dropdownInput(
+            "Credit type",
+            listOf("full" to "Full credit", "partial" to "Partial credit"),
+            "full"
+        )
         val units = input("Units to credit (for partial)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val note = multilineInput("Note")
         val save = actionButton("Apply credit note")
@@ -5340,7 +5661,7 @@ class MainActivity : AppCompatActivity() {
             api.request(
                 "admin/payments.php", "POST",
                 JSONObject().put("action", "credit_note").put("account_number", accountNumber).put("bill_id", billId)
-                    .put("credit_type", type.text.toString().trim().lowercase())
+                    .put("credit_type", type.tag?.toString().orEmpty())
                     .put("units", units.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("note", note.text.toString().trim())
             ) { r ->
@@ -5355,7 +5676,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPaymentAdjustmentForm(accountNumber: String, paymentId: Int) {
         backAction = { showPaymentsWorkspace() }
-        val type = input("Adjustment type: refund or correction").apply { setText(R.string.adjustment_type_refund) }
+        val type = dropdownInput(
+            "Adjustment type",
+            listOf("refund" to "Refund", "correction" to "Correction"),
+            "refund"
+        )
         val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val reason = multilineInput("Reason")
         val save = actionButton("Submit adjustment request")
@@ -5367,7 +5692,7 @@ class MainActivity : AppCompatActivity() {
             api.request(
                 "admin/payments.php", "POST",
                 JSONObject().put("action", "payment_adjustment_request").put("account_number", accountNumber).put("payment_id", paymentId)
-                    .put("adjustment_type", type.text.toString().trim().lowercase())
+                    .put("adjustment_type", type.tag?.toString().orEmpty())
                     .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("reason", reason.text.toString().trim())
             ) { r ->
@@ -5537,21 +5862,40 @@ class MainActivity : AppCompatActivity() {
                     ?.takeIf(String::isNotBlank)
                     ?: "Account, meter number or name"
                 val (identifierBox, identifier) = searchableIdentifierField(identifierHint)
-                val reading = input("Current reading", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+                val reading = input(fieldLabel(data, "current_reading", "Current reading"), InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
                 val billingMonth = datePickerInput(
-                    "Billing month",
+                    fieldLabel(data, "billing_month", "Billing month"),
                     fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")),
                     metadata.optJSONObject("billing_month")?.optString("picker_mode").orEmpty().ifBlank { "date" }
                 )
                 val dueDate = datePickerInput(
-                    "Due date",
+                    fieldLabel(data, "due_date", "Due date"),
                     fieldDefaultValue(data, "due_date", data.optString("default_due_date")),
                     metadata.optJSONObject("due_date")?.optString("picker_mode").orEmpty().ifBlank { "date" }
                 )
                 val submit = actionButton("Create bill from reading")
                 val form = screen("Invoicing", "Create a pending bill from a meter reading")
-                form.addView(identifierBox)
-                listOf(reading, billingMonth, dueDate, submit).forEach(form::addView)
+                form.addView(heroBanner(
+                    title = "Invoicing",
+                    message = "Create pending bills using the same billing defaults and search flow exposed by the server.",
+                    eyebrow = "Billing workspace",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Billing month", fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")), R.drawable.ic_circle_clock, toneBlue),
+                    summaryCard("Due date", fieldDefaultValue(data, "due_date", data.optString("default_due_date")), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Rate", money(data.optJSONObject("settings")?.optDouble("rate_per_unit") ?: 0.0), R.drawable.ic_wallet, toneAmber),
+                    summaryCard("Service charge", money(data.optJSONObject("settings")?.optDouble("service_charge") ?: 0.0), R.drawable.ic_receipt, toneBlue)
+                )))
+                form.addView(sectionPanel(
+                    title = "Create bill from reading",
+                    description = "Search for an account or meter, then use the server-provided billing defaults for the reading entry."
+                ) {
+                    addView(identifierBox)
+                    listOf(reading, billingMonth, dueDate, submit).forEach(::addView)
+                })
                 addBack(form)
                 submit.setOnClickListener {
                     if (identifier.text.isBlank() || reading.text.isBlank()) {
@@ -6437,6 +6781,77 @@ class MainActivity : AppCompatActivity() {
         return defaultValue.ifBlank { fallback }
     }
 
+    private fun fieldLabel(data: JSONObject, fieldKey: String, fallback: String): String =
+        data.optJSONObject("field_metadata")
+            ?.optJSONObject(fieldKey)
+            ?.optString("label")
+            .orEmpty()
+            .ifBlank { fallback }
+
+    private fun fieldPickerMode(data: JSONObject, fieldKey: String, fallback: String): String =
+        data.optJSONObject("field_metadata")
+            ?.optJSONObject(fieldKey)
+            ?.optString("picker_mode")
+            .orEmpty()
+            .ifBlank { fallback }
+
+    private fun fieldSourceOptions(data: JSONObject, fieldKey: String, source: JSONArray?): List<Pair<String, String>> {
+        if (source == null || source.length() == 0) return emptyList()
+        val field = data.optJSONObject("field_metadata")?.optJSONObject(fieldKey) ?: JSONObject()
+        val labelKey = field.optString("label_key").ifBlank { "id" }
+        val fallbackTemplate = field.optString("fallback_label_template")
+        val options = mutableListOf<Pair<String, String>>()
+        for (index in 0 until source.length()) {
+            val row = source.optJSONObject(index) ?: continue
+            val value = row.optInt("id").takeIf { it > 0 }?.toString().orEmpty()
+            if (value.isBlank()) continue
+            val explicitLabel = row.optString(labelKey).takeIf(String::isNotBlank)
+            val label = explicitLabel ?: formatTemplateLabel(fallbackTemplate, row).ifBlank {
+                listOf(row.optString("billing_month"), money(row.optDouble("outstanding_amount")))
+                    .filter(String::isNotBlank)
+                    .joinToString(" • ")
+            }
+            options += value to label
+        }
+        return options
+    }
+
+    private fun formatTemplateLabel(template: String, row: JSONObject): String {
+        if (template.isBlank()) return ""
+        var result = template
+        val iterator = row.keys()
+        while (iterator.hasNext()) {
+            val key = iterator.next()
+            val value = if (key.contains("amount") || key.contains("balance")) {
+                row.optDouble(key).takeIf { row.opt(key) != JSONObject.NULL }?.let(::money) ?: row.optString(key)
+            } else {
+                row.optString(key)
+            }
+            result = result.replace("{$key}", value)
+        }
+        return result
+    }
+
+    private fun addProfileFields(parent: LinearLayout, fields: JSONArray?, user: JSONObject, themePreference: String) {
+        if (fields == null || fields.length() == 0) return
+        for (index in 0 until fields.length()) {
+            val field = fields.optJSONObject(index) ?: continue
+            val key = field.optString("key")
+            if (key.isBlank()) continue
+            val label = field.optString("label").ifBlank {
+                key.replace('_', ' ').replaceFirstChar(Char::uppercase)
+            }
+            val value = when (key) {
+                "theme_preference" -> themePreferenceLabel(themePreference)
+                "connection_type", "role", "status" -> user.optString(key).replace('_', ' ').replaceFirstChar {
+                    if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
+                }
+                else -> user.optString(key)
+            }
+            addField(parent, label, value)
+        }
+    }
+
     private fun toneForEmphasis(emphasis: String): Tone = when (emphasis.lowercase()) {
         "positive", "success" -> toneTeal
         "warning" -> toneAmber
@@ -6491,16 +6906,9 @@ class MainActivity : AppCompatActivity() {
         }
         parent.addView(statusBanner(title, message, tone, R.drawable.ic_circle_alert, false))
         val action = alert.optJSONObject("action") ?: return
-        val label = action.optString("label")
-        if (label.isBlank()) return
-        val button = secondaryButton(label)
-        button.setOnClickListener {
-            when (action.optString("target")) {
-                "/api/mobile/registration_payment.php" -> loadRegistrationPayment()
-                "/api/mobile/change_password.php" -> showChangePassword()
-                "/api/mobile/theme.php" -> showProfile()
-            }
-        }
+        val spec = mobileActionSpec(action) ?: return
+        val button = secondaryButton(spec.first)
+        button.setOnClickListener { spec.second() }
         parent.addView(button)
     }
 
@@ -7197,11 +7605,15 @@ class MainActivity : AppCompatActivity() {
             "full_name", "title", "name", "subject", "entry_no", "reference_no",
             "account_number", "code", "period_key", "meter_number", "phone", "email", "memo"
         ),
-        onClick: ((JSONObject) -> Unit)? = null
+        onClick: ((JSONObject) -> Unit)? = null,
+        emptyState: String = "No records found.",
+        showHeading: Boolean = true
     ) {
-        parent.addView(sectionTitle(heading))
+        if (showHeading) {
+            parent.addView(sectionTitle(heading))
+        }
         if (rows == null || rows.length() == 0) {
-            parent.addView(empty("No records found."))
+            parent.addView(empty(emptyState))
             return
         }
         for (index in 0 until rows.length()) {
