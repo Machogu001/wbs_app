@@ -23,8 +23,13 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import android.graphics.pdf.PdfRenderer
 import android.text.Html
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -1152,17 +1157,31 @@ class MainActivity : AppCompatActivity() {
             iconRes = if (outstanding > 0.01) R.drawable.ic_wallet else R.drawable.ic_circle_check,
             compact = true
         ))
+        form.addView(spotlightPanel(
+            title = if (outstanding > 0.01) "Balance needs attention" else "Account in good standing",
+            message = if (outstanding > 0.01) {
+                "Review your latest bills, payment activity and meter usage from one place."
+            } else {
+                "Stay on top of statements, readings and support updates from your dashboard."
+            },
+            meta = listOf(
+                user?.optString("account_number").orEmpty().takeIf(String::isNotBlank),
+                summary.optInt("active_meters").takeIf { it > 0 }?.let { "$it active meter(s)" },
+                summary.optInt("pending_bills").takeIf { it > 0 }?.let { "$it pending bill(s)" }
+                    ?: "No pending bills"
+            ).filterNotNull().joinToString(" • "),
+            tone = if (outstanding > 0.01) toneAmber else toneBlue
+        ))
         form.addView(identityCard(
             name,
             user?.optString("account_number").orEmpty(),
             user?.optString("role", "customer").orEmpty().replaceFirstChar(Char::uppercase)
         ))
-        form.addView(sectionTitle("Account summary"))
         val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
-        if (summaryCards.isNotEmpty()) {
-            form.addView(summaryCardGrid(summaryCards))
+        val accountSummaryCards = if (summaryCards.isNotEmpty()) {
+            summaryCards
         } else {
-            form.addView(summaryCardGrid(listOf(
+            listOf(
                 summaryCard(
                     "Outstanding",
                     money(summary.optDouble("outstanding_amount")),
@@ -1187,17 +1206,32 @@ class MainActivity : AppCompatActivity() {
                     R.drawable.ic_meter,
                     toneTeal
                 )
-            )))
+            )
         }
+        form.addView(sectionPanel(
+            title = "Account summary",
+            description = "A quick financial snapshot in the same blue-and-gold tone as the web dashboard."
+        ) {
+            addView(summaryCardGrid(accountSummaryCards))
+        })
+        form.addView(sectionTitle("Recent activity"))
         addRecordList(form, "Latest bills", data.optJSONArray("latest_bills"), listOf("billing_month", "type_label")) { row ->
             showBill(row.optInt("id"))
         }
         data.optJSONObject("latest_payment")?.let { latestPayment ->
             addPaymentRows(form, JSONArray().put(latestPayment), true)
         }
-        addRecordList(form, "Meters", data.optJSONArray("meters"), listOf("meter_number", "meter_label"))
-        form.addView(sectionTitle("Quick actions"))
-        form.addView(quickActionGrid(listOf(
+        form.addView(sectionPanel(
+            title = "Meters and service points",
+            description = "Track active meters and move quickly into readings or support workflows."
+        ) {
+            addRecordList(this, "Meters", data.optJSONArray("meters"), listOf("meter_number", "meter_label"))
+        })
+        form.addView(sectionPanel(
+            title = "Quick actions",
+            description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
+        ) {
+            addView(quickActionGrid(listOf(
             Triple("Profile", R.drawable.ic_person, ::showProfile),
             Triple("Statement", R.drawable.ic_receipt, ::showStatement),
             Triple("Bills", R.drawable.ic_wallet) { showBills() },
@@ -1207,7 +1241,8 @@ class MainActivity : AppCompatActivity() {
             Triple("Submit reading", R.drawable.ic_meter, ::showSubmitReading),
             Triple("Complaints", R.drawable.ic_support, ::showComplaints),
             Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
-        )))
+            )))
+        })
         if (user?.optString("role", "customer")?.lowercase() != "customer") {
             form.addView(sectionTitle("Staff workspaces"))
             addWorkspace(form, "Customers & service", "Customer records, onboarding, locations and complaints", R.drawable.ic_group, ::showCustomersWorkspace)
@@ -1238,7 +1273,7 @@ class MainActivity : AppCompatActivity() {
         "Billing & payments",
         "Manage billing, collections and payment workflows.",
         listOf(
-            "Collections" to { showCollections() },
+            "Collections" to ::showCollections,
             "Record payment" to ::showManualPayment,
             "Payments workspace" to ::showPaymentsWorkspace,
             "Payment transactions" to ::showPaymentTransactions,
@@ -1353,9 +1388,17 @@ class MainActivity : AppCompatActivity() {
             iconRes = R.drawable.ic_circle_check,
             compact = true
         ))
+        form.addView(summaryCardGrid(listOf(
+            summaryCard("Modules", destinations.size.toString(), R.drawable.ic_circle_check, toneBlue),
+            summaryCard("Focus", if (destinations.size > 4) "Full workspace" else "Task set", R.drawable.ic_receipt, toneTeal)
+        )))
+        form.addView(sectionPanel(
+            title = "Available tools",
+            description = "This mobile workspace follows the same grouped operations model as the web application."
+        ) {
         destinations.forEach { (label, action) ->
             addWorkspace(
-                form,
+                this,
                 label,
                 "Open $label.",
                 iconForWorkspaceLabel(label),
@@ -1363,6 +1406,7 @@ class MainActivity : AppCompatActivity() {
                 toneForWorkspaceLabel(label)
             )
         }
+        })
         show(form)
     }
 
@@ -1401,6 +1445,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderProfile(profileData: JSONObject, user: JSONObject, themePreference: String, availablePreferences: List<String>) {
         val screen = profileData.optJSONObject("screen") ?: JSONObject()
+        val linkedMeters = user.optJSONArray("meters") ?: JSONArray()
         val form = screen(screen.optString("title").ifBlank { "Profile" }, user.optString("full_name"))
         form.addView(heroBanner(
             title = user.optString("full_name").ifBlank { "Profile" },
@@ -1412,36 +1457,63 @@ class MainActivity : AppCompatActivity() {
             iconRes = R.drawable.ic_person,
             compact = true
         ))
+        form.addView(summaryCardGrid(listOf(
+            summaryCard("Account", user.optString("account_number").ifBlank { "Not set" }, R.drawable.ic_receipt, toneBlue),
+            summaryCard("Status", user.optString("status").ifBlank { "Unknown" }, R.drawable.ic_circle_check, toneForStatus(user.optString("status"), toneBlue)),
+            summaryCard("Theme", themePreferenceLabel(themePreference), R.drawable.ic_circle_clock, toneTeal),
+            summaryCard("Linked meters", linkedMeters.length().toString(), R.drawable.ic_meter, toneBlue)
+        )))
         val alerts = screen.optJSONArray("alerts") ?: JSONArray()
         for (index in 0 until alerts.length()) {
             val alert = alerts.optJSONObject(index) ?: continue
             addScreenAlert(form, alert)
         }
-        addField(form, "Account", user.optString("account_number"))
-        addField(form, "Username", user.optString("username"))
-        addField(form, "Role", user.optString("role"))
-        addField(form, "Phone", user.optString("phone_number"))
-        addField(form, "Email", user.optString("email"))
-        addField(form, "Address", user.optString("address"))
-        addField(form, "Connection type", user.optString("connection_type"))
-        addField(form, "Status", user.optString("status"))
-        form.addView(sectionTitle("Appearance"))
-        form.addView(body(
-            "Choose how My Water Bill looks on this device. Current: ${themePreferenceLabel(themePreference)}."
-        ).apply { setPadding(dp(2), 0, 0, dp(10)) })
-        form.addView(optionGroup(
-            "Theme",
-            availablePreferences.map { it to themePreferenceLabel(it) },
-            themePreference,
-            1
-        ) { selected -> updateThemePreference(selected, user) })
-        val edit = actionButton("Edit profile")
-        edit.setOnClickListener { showEditProfile(user) }
-        form.addView(edit)
-        val password = secondaryButton("Change password")
-        password.setOnClickListener { showChangePassword() }
-        form.addView(password)
-        addRecordList(form, "Linked meters", user.optJSONArray("meters"), listOf("meter_number", "meter_label"))
+        form.addView(sectionPanel(
+            title = "Account details",
+            description = "Core identity and service information, grouped like the web profile page."
+        ) {
+            addField(this, "Account", user.optString("account_number"))
+            addField(this, "Username", user.optString("username"))
+            addField(this, "Role", user.optString("role"))
+            addField(this, "Connection type", user.optString("connection_type"))
+            addField(this, "Status", user.optString("status"))
+        })
+        form.addView(sectionPanel(
+            title = "Contact information",
+            description = "These details are used for statements, notifications and support follow-up."
+        ) {
+            addField(this, "Phone", user.optString("phone_number"))
+            addField(this, "Email", user.optString("email"))
+            addField(this, "Address", user.optString("address"))
+        })
+        form.addView(sectionPanel(
+            title = "Appearance",
+            description = "Choose how My Water Bill looks on this device. Current: ${themePreferenceLabel(themePreference)}."
+        ) {
+            addView(optionGroup(
+                "Theme",
+                availablePreferences.map { it to themePreferenceLabel(it) },
+                themePreference,
+                1
+            ) { selected -> updateThemePreference(selected, user) })
+        })
+        form.addView(sectionPanel(
+            title = "Security and updates",
+            description = "Keep your sign-in details and account information current."
+        ) {
+            val edit = actionButton("Edit profile")
+            edit.setOnClickListener { showEditProfile(user) }
+            addView(edit)
+            val password = secondaryButton("Change password")
+            password.setOnClickListener { showChangePassword() }
+            addView(password)
+        })
+        form.addView(sectionPanel(
+            title = "Linked meters",
+            description = "Meters associated with this account and available for readings or service checks."
+        ) {
+            addRecordList(this, "Linked meters", linkedMeters, listOf("meter_number", "meter_label"))
+        })
         addBack(form)
         show(form)
     }
@@ -1574,6 +1646,8 @@ class MainActivity : AppCompatActivity() {
                 onResult(result, "Could not load statement") { response ->
                     val data = response.data()
                     val summary = data.optJSONObject("summary") ?: JSONObject()
+                    val bills = data.optJSONArray("bills") ?: JSONArray()
+                    val payments = data.optJSONArray("payments") ?: JSONArray()
                     val form = screen("Account statement", "Bills and completed payments")
                     form.addView(heroBanner(
                         title = "Statement overview",
@@ -1593,11 +1667,20 @@ class MainActivity : AppCompatActivity() {
                             if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
                         )
                     )))
-                    val bills = data.optJSONArray("bills") ?: JSONArray()
-                    addRecordList(form, "Bills", bills, listOf("billing_month", "type_label")) { bill ->
-                        showBill(bill.optInt("id"))
-                    }
-                    addPaymentRows(form, data.optJSONArray("payments"), true)
+                    form.addView(sectionPanel(
+                        title = "Billing history",
+                        description = "A statement-style list of bills, closer to the web statement and billing history views."
+                    ) {
+                        addRecordList(this, "Bills", bills, listOf("billing_month", "type_label")) { bill ->
+                            showBill(bill.optInt("id"))
+                        }
+                    })
+                    form.addView(sectionPanel(
+                        title = "Completed payments",
+                        description = "Settlements applied to your account during the statement period."
+                    ) {
+                        addPaymentRows(this, payments, true)
+                    })
                     addBack(form)
                     show(form)
                 }
@@ -1611,7 +1694,28 @@ class MainActivity : AppCompatActivity() {
             val submit = actionButton("Submit complaint")
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val form = screen("Support complaints", "Submit and track service issues.")
-            listOf(subject, message, submit, list).forEach(form::addView)
+            form.addView(heroBanner(
+                title = "Service complaints",
+                message = "Raise an issue and follow its progress without leaving the app.",
+                eyebrow = "Customer care",
+                tone = toneAmber,
+                iconRes = R.drawable.ic_support,
+                compact = true
+            ))
+            form.addView(sectionPanel(
+                title = "New complaint",
+                description = "Matches the web complaints page flow: submit first, then track status history below."
+            ) {
+                addView(subject)
+                addView(message)
+                addView(submit)
+            })
+            form.addView(sectionPanel(
+                title = "Complaint history",
+                description = "Status and submission history for all complaints tied to this account."
+            ) {
+                addView(list)
+            })
             addBack(form)
             fun load() {
                 api.request("complaints.php") { result ->
@@ -1619,12 +1723,22 @@ class MainActivity : AppCompatActivity() {
                         result.onSuccess { response ->
                             list.removeAllViews()
                             val rows = response.data().optJSONArray("complaints") ?: JSONArray()
+                            val openCount = (0 until rows.length()).count { index ->
+                                rows.optJSONObject(index)?.optString("status")?.lowercase() !in setOf("resolved", "closed", "handled")
+                            }
+                            if (form.findViewWithTag<View>("complaint-summary") == null) {
+                                form.addView(summaryCardGrid(listOf(
+                                    summaryCard("Complaints", rows.length().toString(), R.drawable.ic_support, toneBlue),
+                                    summaryCard("Open", openCount.toString(), R.drawable.ic_warning_triangle, if (openCount > 0) toneAmber else toneTeal)
+                                )).apply { tag = "complaint-summary" }, 1)
+                            }
                             if (rows.length() == 0) list.addView(empty("No complaints submitted."))
                             for (index in 0 until rows.length()) {
                                 val row = rows.optJSONObject(index) ?: continue
                                 list.addView(card(
                                     row.optString("subject"),
-                                    "${row.optString("status")} • ${row.optString("created_at")}\n${row.optString("message")}"
+                                    "${row.optString("status")} • ${row.optString("created_at")}\n${row.optString("message")}",
+                                    toneForStatus(row.optString("status"), toneBlue)
                                 ))
                             }
                         }.onFailure(::handleError)
@@ -1674,26 +1788,57 @@ class MainActivity : AppCompatActivity() {
                 val statusField = dropdownInput("Bill status", statusOptions, status)
                 val limitField = dropdownInput("Rows", limitOptions, limit.toString())
                 val form = screen(screen.optString("title").ifBlank { "Bills" }, "${data.optInt("total", bills.length())} bill(s)")
-                form.addView(statusField)
-                form.addView(limitField)
-                form.addView(buttonRow(
-                    "Apply filters" to {
-                        childScreen()
-                        showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit)
-                    },
-                    "Clear" to {
-                        childScreen()
-                        showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100)
-                    }
+                val outstandingTotal = (0 until bills.length()).sumOf { index ->
+                    bills.optJSONObject(index)?.optDouble("outstanding_amount") ?: 0.0
+                }
+                val overdueCount = (0 until bills.length()).count { index ->
+                    bills.optJSONObject(index)?.optString("status")?.equals("overdue", ignoreCase = true) == true
+                }
+                form.addView(heroBanner(
+                    title = "Billing history",
+                    message = "Browse current charges and open individual bills using the same grouped flow as the web bills page.",
+                    eyebrow = "My account",
+                    tone = if (outstandingTotal > 0.01) toneAmber else toneTeal,
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
                 ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Bills in view", bills.length().toString(), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Outstanding", money(outstandingTotal), R.drawable.ic_wallet, if (outstandingTotal > 0.01) toneAmber else toneTeal),
+                    summaryCard("Overdue", overdueCount.toString(), R.drawable.ic_warning_triangle, if (overdueCount > 0) toneRed else toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Filters and exports",
+                    description = "Use status and row controls to focus the bill list, similar to the web billing tools."
+                ) {
+                    addView(statusField)
+                    addView(limitField)
+                    addView(buttonRow(
+                        "Apply filters" to {
+                            childScreen()
+                            showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit)
+                        },
+                        "Clear" to {
+                            childScreen()
+                            showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100)
+                        }
+                    ))
+                })
+                form.addView(sectionTitle("Bills in view"))
                 if (bills.length() == 0) form.addView(empty("No bills found."))
                 for (index in 0 until bills.length()) {
                     val bill = bills.optJSONObject(index) ?: continue
-                    val view = actionButton(
-                        "${bill.optString("type_label", "Bill")} • ${bill.optString("billing_month")}\n" +
-                            "${money(bill.optDouble("outstanding_amount"))} due • ${bill.optString("status")}"
+                    val view = card(
+                        "${bill.optString("type_label", "Bill")} • ${bill.optString("billing_month")}",
+                        listOf(
+                            "Outstanding ${money(bill.optDouble("outstanding_amount"))}",
+                            bill.optString("status"),
+                            bill.optString("due_date").takeIf(String::isNotBlank)?.let { "Due $it" }
+                        ).filterNotNull().joinToString(" • "),
+                        toneForStatus(bill.optString("status"), toneBlue)
                     )
-                    view.isAllCaps = false
+                    view.isClickable = true
+                    view.isFocusable = true
                     view.setOnClickListener { showBill(bill.optInt("id")) }
                     form.addView(view)
                 }
@@ -1715,29 +1860,61 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load bill") { response ->
                 val bill = response.data().optJSONObject("bill") ?: JSONObject()
                 val form = screen(bill.optString("type_label", "Bill"), bill.optString("billing_month"))
-                addField(form, "Account", bill.optString("account_number"))
-                addField(form, "Status", bill.optString("status"))
-                addField(form, "Previous reading", bill.optString("previous_reading"))
-                addField(form, "Current reading", bill.optString("current_reading"))
-                addField(form, "Consumption", bill.optString("consumption"))
-                addField(form, "Total", money(bill.optDouble("amount")))
-                addField(form, "Paid", money(bill.optDouble("paid_amount")))
-                addField(form, "Outstanding", money(bill.optDouble("outstanding_amount")))
-                addField(form, "Due date", bill.optString("due_date"))
-                if (bill.optDouble("outstanding_amount") > 0.01) {
-                    val pay = actionButton("Pay with M-Pesa")
-                    pay.setOnClickListener { showPaymentForm(id) }
-                    form.addView(pay)
+                form.addView(heroBanner(
+                    title = bill.optString("type_label", "Bill"),
+                    message = listOf(bill.optString("billing_month"), bill.optString("account_number"))
+                        .filter(String::isNotBlank)
+                        .joinToString(" • "),
+                    eyebrow = "Invoice detail",
+                    tone = toneForStatus(bill.optString("status"), toneBlue),
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Total", money(bill.optDouble("amount")), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Paid", money(bill.optDouble("paid_amount")), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Outstanding", money(bill.optDouble("outstanding_amount")), R.drawable.ic_wallet, if (bill.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal),
+                    summaryCard("Status", bill.optString("status").ifBlank { "Unknown" }, R.drawable.ic_warning_triangle, toneForStatus(bill.optString("status"), toneBlue))
+                )))
+                form.addView(sectionPanel(
+                    title = "Bill overview",
+                    description = "Meter readings, billing totals and due date for this charge."
+                ) {
+                    addField(this, "Account", bill.optString("account_number"))
+                    addField(this, "Previous reading", bill.optString("previous_reading"))
+                    addField(this, "Current reading", bill.optString("current_reading"))
+                    addField(this, "Consumption", bill.optString("consumption"))
+                    addField(this, "Due date", bill.optString("due_date"))
                 }
-                addUrlButton(form, "Open payment page", bill.optString("public_payment_url"))
-                addDocumentButton(form, "Open invoice", bill.optString("document_url"))
-                if (bill.optDouble("outstanding_amount") > 0.01) {
-                    val request = secondaryButton("Request installment, waiver or write-off")
-                    request.setOnClickListener { showBillAction(id, bill.optDouble("outstanding_amount")) }
-                    form.addView(request)
-                }
-                addJsonRows(form, "Line items", bill.optJSONArray("line_items"), listOf("description", "line_type", "amount"))
-                addPaymentRows(form, bill.optJSONArray("payments"))
+                form.addView(sectionPanel(
+                    title = "Bill actions",
+                    description = "Pay online, open the invoice or request financial assistance from one block."
+                ) {
+                    if (bill.optDouble("outstanding_amount") > 0.01) {
+                        val pay = actionButton("Pay with M-Pesa")
+                        pay.setOnClickListener { showPaymentForm(id) }
+                        addView(pay)
+                    }
+                    addUrlButton(this, "Open payment page", bill.optString("public_payment_url"))
+                    addDocumentButton(this, "Open invoice", bill.optString("document_url"))
+                    if (bill.optDouble("outstanding_amount") > 0.01) {
+                        val request = secondaryButton("Request installment, waiver or write-off")
+                        request.setOnClickListener { showBillAction(id, bill.optDouble("outstanding_amount")) }
+                        addView(request)
+                    }
+                })
+                form.addView(sectionPanel(
+                    title = "Line items",
+                    description = "Charge components for this bill, similar to the invoice breakdown on the web app."
+                ) {
+                    addJsonRows(this, "Line items", bill.optJSONArray("line_items"), listOf("description", "line_type", "amount"))
+                })
+                form.addView(sectionPanel(
+                    title = "Payments against this bill",
+                    description = "Settlements already applied to this invoice."
+                ) {
+                    addPaymentRows(this, bill.optJSONArray("payments"))
+                })
                 addBack(form)
                 show(form)
             }
@@ -1854,26 +2031,40 @@ class MainActivity : AppCompatActivity() {
                 toneAmber, R.drawable.ic_circle_clock, true
             ))
         }
-        addField(form, "Amount", money(payment.optDouble("amount")))
-        addField(form, "Outstanding balance", money(payment.optDouble("outstanding_amount")))
-        addField(form, "Phone", payment.optString("phone_number"))
-        addField(form, "M-Pesa receipt", payment.optString("mpesa_receipt").ifBlank { "Pending" })
-        addField(form, "Transaction date", payment.optString("transaction_date").ifBlank { "—" })
-        if (isFinal && isSuccessful) {
-            addDocumentButton(form, "View receipt", payment.optString("receipt_url"))
-            addDocumentButton(form, "View receipt PDF", payment.optString("receipt_pdf_url"))
+        form.addView(summaryCardGrid(listOf(
+            summaryCard("Amount", money(payment.optDouble("amount")), R.drawable.ic_wallet, toneBlue),
+            summaryCard("Outstanding", money(payment.optDouble("outstanding_amount")), R.drawable.ic_receipt, if (payment.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal),
+            summaryCard("Receipt", payment.optString("mpesa_receipt").ifBlank { "Pending" }, R.drawable.ic_circle_check, toneTeal),
+            summaryCard("Status", statusText.replaceFirstChar(Char::uppercase), R.drawable.ic_warning_triangle, toneForStatus(statusText, toneBlue))
+        )))
+        form.addView(sectionPanel(
+            title = "Payment details",
+            description = "Tracks the same fields surfaced in the web receipt and payment status views."
+        ) {
+            addField(this, "Phone", payment.optString("phone_number"))
+            addField(this, "Transaction date", payment.optString("transaction_date").ifBlank { "—" })
+            addField(this, "Checkout request", payment.optString("checkout_request_id").ifBlank { "—" })
+        })
+        form.addView(sectionPanel(
+            title = "Actions",
+            description = "Refresh the live payment state or open the final receipt when available."
+        ) {
+            if (isFinal && isSuccessful) {
+                addDocumentButton(this, "View receipt", payment.optString("receipt_url"))
+                addDocumentButton(this, "View receipt PDF", payment.optString("receipt_pdf_url"))
+            }
+            val refresh = secondaryButton("Refresh status")
+            refresh.setOnClickListener {
+                setLoading(refresh, true, "Refresh status")
+                fetchPaymentStatus(
+                    screenEpoch, billId,
+                    payment.optInt("id").takeIf { it > 0 },
+                    payment.optString("checkout_request_id").takeIf(String::isNotBlank),
+                    isManualRefresh = true
+                )
+            }
+            addView(refresh)
         }
-        val refresh = secondaryButton("Refresh status")
-        refresh.setOnClickListener {
-            setLoading(refresh, true, "Refresh status")
-            fetchPaymentStatus(
-                screenEpoch, billId,
-                payment.optInt("id").takeIf { it > 0 },
-                payment.optString("checkout_request_id").takeIf(String::isNotBlank),
-                isManualRefresh = true
-            )
-        }
-        form.addView(refresh)
         when {
             isFinal && isSuccessful -> {
                 val viewBill = actionButton("View bill")
@@ -1906,12 +2097,17 @@ class MainActivity : AppCompatActivity() {
             error.message ?: "A network error occurred while checking your payment.",
             toneRed, R.drawable.ic_circle_alert, false
         ))
-        val retry = actionButton("Try again")
-        retry.setOnClickListener {
-            setLoading(retry, true, "Try again")
-            fetchPaymentStatus(screenEpoch, billId, paymentId, checkoutRequestId, isManualRefresh = true)
-        }
-        form.addView(retry)
+        form.addView(sectionPanel(
+            title = "What you can do",
+            description = "Retry the status check or return to the bill while the payment continues to process on M-Pesa."
+        ) {
+            val retry = actionButton("Try again")
+            retry.setOnClickListener {
+                setLoading(retry, true, "Try again")
+                fetchPaymentStatus(screenEpoch, billId, paymentId, checkoutRequestId, isManualRefresh = true)
+            }
+            addView(retry)
+        })
         addBack(form)
         show(form)
     }
@@ -2009,6 +2205,12 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val payments = data.optJSONArray("payments") ?: JSONArray()
                 val form = screen("Payments", "${data.optInt("total", payments.length())} payment(s)")
+                val completedAmount = (0 until payments.length()).sumOf { index ->
+                    payments.optJSONObject(index)?.optDouble("amount") ?: 0.0
+                }
+                val completedCount = (0 until payments.length()).count { index ->
+                    payments.optJSONObject(index)?.optString("status")?.equals("completed", ignoreCase = true) == true
+                }
                 form.addView(heroBanner(
                     title = "Payment history",
                     message = "Track settlement status and open individual receipts.",
@@ -2017,7 +2219,17 @@ class MainActivity : AppCompatActivity() {
                     iconRes = R.drawable.ic_wallet,
                     compact = true
                 ))
-                addPaymentRows(form, payments, true)
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Payments", payments.length().toString(), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Completed", completedCount.toString(), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Amount", money(completedAmount), R.drawable.ic_wallet, toneBlue)
+                )))
+                form.addView(sectionPanel(
+                    title = "Payment activity",
+                    description = "Recent payment records and receipt access in the same grouped style as the web payment views."
+                ) {
+                    addPaymentRows(this, payments, true)
+                })
                 addBack(form)
                 show(form)
             }
@@ -2031,14 +2243,39 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load payment") { response ->
                 val payment = response.data().optJSONObject("payment") ?: JSONObject()
                 val form = screen("Payment receipt", payment.optString("mpesa_receipt", "Payment"))
-                addField(form, "Amount", money(payment.optDouble("amount")))
-                addField(form, "Status", payment.optString("status"))
-                addField(form, "Method", payment.optString("payment_method"))
-                addField(form, "Phone", payment.optString("phone_number"))
-                addField(form, "Account", payment.optString("account_number"))
-                addField(form, "Transaction date", payment.optString("transaction_date"))
-                addDocumentButton(form, "View receipt", payment.optString("receipt_url"))
-                addDocumentButton(form, "View receipt PDF", payment.optString("receipt_pdf_url"))
+                form.addView(heroBanner(
+                    title = "Payment receipt",
+                    message = if (payment.optString("status").equals("completed", ignoreCase = true)) {
+                        "Payment received and recorded on the account."
+                    } else {
+                        "Review the latest transaction state and receipt details."
+                    },
+                    eyebrow = "Receipt",
+                    tone = toneForStatus(payment.optString("status"), toneBlue),
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Amount", money(payment.optDouble("amount")), R.drawable.ic_wallet, toneBlue),
+                    summaryCard("Status", payment.optString("status").ifBlank { "Unknown" }, R.drawable.ic_circle_check, toneForStatus(payment.optString("status"), toneBlue)),
+                    summaryCard("Method", payment.optString("payment_method").replaceFirstChar(Char::uppercase).ifBlank { "M-Pesa" }, R.drawable.ic_receipt, toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Receipt details",
+                    description = "Structured like the web receipt page with the key transaction and account fields grouped together."
+                ) {
+                    addField(this, "Phone", payment.optString("phone_number"))
+                    addField(this, "Account", payment.optString("account_number"))
+                    addField(this, "M-Pesa receipt", payment.optString("mpesa_receipt"))
+                    addField(this, "Transaction date", payment.optString("transaction_date"))
+                })
+                form.addView(sectionPanel(
+                    title = "Next steps",
+                    description = "Open the hosted receipt or PDF copy when available."
+                ) {
+                    addDocumentButton(this, "View receipt", payment.optString("receipt_url"))
+                    addDocumentButton(this, "View receipt PDF", payment.optString("receipt_pdf_url"))
+                })
                 addBack(form)
                 show(form)
             }
@@ -2052,18 +2289,37 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load meters") { response ->
                 val meters = response.data().optJSONArray("meters") ?: JSONArray()
                 val form = screen("Meters", "${meters.length()} linked meter(s)")
-                if (meters.length() == 0) form.addView(empty("No meters are linked to this account."))
-                for (index in 0 until meters.length()) {
-                    val meter = meters.optJSONObject(index) ?: continue
-                    form.addView(card(
-                        meter.optString("meter_number"),
-                        listOf(
-                            meter.optString("meter_label"),
-                            meter.optString("status"),
-                            if (meter.optBoolean("is_primary")) "Primary meter" else ""
-                        ).filter(String::isNotBlank).joinToString(" • ")
-                    ))
-                }
+                val primaryCount = (0 until meters.length()).count { index -> meters.optJSONObject(index)?.optBoolean("is_primary") == true }
+                form.addView(heroBanner(
+                    title = "Meter inventory",
+                    message = "Review linked meters and their service state from a cleaner utility view.",
+                    eyebrow = "Service points",
+                    tone = toneTeal,
+                    iconRes = R.drawable.ic_meter,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Linked meters", meters.length().toString(), R.drawable.ic_meter, toneBlue),
+                    summaryCard("Primary", primaryCount.toString(), R.drawable.ic_circle_check, toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Registered meters",
+                    description = "Each service point attached to your account, similar to the linked meter tables on the web app."
+                ) {
+                    if (meters.length() == 0) addView(empty("No meters are linked to this account."))
+                    for (index in 0 until meters.length()) {
+                        val meter = meters.optJSONObject(index) ?: continue
+                        addView(card(
+                            meter.optString("meter_number"),
+                            listOf(
+                                meter.optString("meter_label"),
+                                meter.optString("status"),
+                                if (meter.optBoolean("is_primary")) "Primary meter" else ""
+                            ).filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(meter.optString("status"), toneBlue)
+                        ))
+                    }
+                })
                 addBack(form)
                 show(form)
             }
@@ -2077,15 +2333,36 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load meter readings") { response ->
                 val readings = response.data().optJSONArray("meter_readings") ?: JSONArray()
                 val form = screen("Meter readings", "${readings.length()} recent submission(s)")
-                if (readings.length() == 0) form.addView(empty("No meter readings submitted."))
-                for (index in 0 until readings.length()) {
-                    val reading = readings.optJSONObject(index) ?: continue
-                    form.addView(card(
-                        "${reading.optString("meter_number")} • ${reading.optString("current_reading")}",
-                        "${reading.optString("billing_month")} • ${reading.optString("status")}"
-                    ))
-                    addUrlButton(form, "View meter photo", reading.optString("photo_url"))
+                val pendingCount = (0 until readings.length()).count { index ->
+                    readings.optJSONObject(index)?.optString("status")?.equals("pending", ignoreCase = true) == true
                 }
+                form.addView(heroBanner(
+                    title = "Reading history",
+                    message = "Track submitted readings, approval status and meter photo evidence.",
+                    eyebrow = "Metering",
+                    tone = if (pendingCount > 0) toneAmber else toneTeal,
+                    iconRes = R.drawable.ic_circle_clock,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Submissions", readings.length().toString(), R.drawable.ic_meter, toneBlue),
+                    summaryCard("Pending", pendingCount.toString(), R.drawable.ic_warning_triangle, if (pendingCount > 0) toneAmber else toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Submitted readings",
+                    description = "Recent readings and their approval state, like the web reading submission history."
+                ) {
+                    if (readings.length() == 0) addView(empty("No meter readings submitted."))
+                    for (index in 0 until readings.length()) {
+                        val reading = readings.optJSONObject(index) ?: continue
+                        addView(card(
+                            "${reading.optString("meter_number")} • ${reading.optString("current_reading")}",
+                            "${reading.optString("billing_month")} • ${reading.optString("status")}",
+                            toneForStatus(reading.optString("status"), toneBlue)
+                        ))
+                        addUrlButton(this, "View meter photo", reading.optString("photo_url"))
+                    }
+                })
                 addBack(form)
                 show(form)
             }
@@ -2097,17 +2374,37 @@ class MainActivity : AppCompatActivity() {
         selectedPhoto = null
         val reading = input("Current reading", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val meter = input("Meter number (optional)")
-        val billingMonth = input("Billing month YYYY-MM-DD (optional)")
-        val dueDate = input("Due date YYYY-MM-DD (optional)")
+        val billingMonth = datePickerInput("Billing month", today(), "month")
+        val dueDate = datePickerInput("Due date", today())
         readingInputs = listOf(reading, meter, billingMonth, dueDate)
         val choosePhoto = secondaryButton("Choose meter photo")
         readingPhotoLabel = body("No photo selected")
         val submit = actionButton("Submit reading")
         val form = screen("Submit meter reading", "A clear JPG or PNG meter photo is required.")
-        readingInputs.forEach(form::addView)
-        form.addView(choosePhoto)
-        form.addView(readingPhotoLabel)
-        form.addView(submit)
+        form.addView(heroBanner(
+            title = "Submit meter reading",
+            message = "Capture a reading and attach photo proof so the submission can move through approval quickly.",
+            eyebrow = "Metering",
+            tone = toneBlue,
+            iconRes = R.drawable.ic_meter,
+            compact = true
+        ))
+        form.addView(sectionPanel(
+            title = "Reading details",
+            description = "Use the same core information as the web submit-reading form, with easier date selection on mobile."
+        ) {
+            readingInputs.forEach(this::addView)
+            addView(choosePhoto)
+            addView(readingPhotoLabel)
+            addView(submit)
+        })
+        form.addView(statusBanner(
+            "Photo required",
+            "Upload a clear JPG or PNG image of the meter display. This helps billing staff review the submission faster.",
+            toneAmber,
+            R.drawable.ic_warning_triangle,
+            false
+        ))
         addBack(form)
         choosePhoto.setOnClickListener {
             photoPicker.launch(arrayOf("image/*"))
@@ -2143,9 +2440,27 @@ class MainActivity : AppCompatActivity() {
         val search = actionButton("Search")
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val form = screen("Customers", "Search customer records by name, account or meter.")
-        form.addView(query)
-        form.addView(search)
-        form.addView(results)
+        form.addView(heroBanner(
+            title = "Customer search",
+            message = "Find accounts quickly and jump into customer detail like the web operations workspace.",
+            eyebrow = "Operations",
+            tone = toneBlue,
+            iconRes = R.drawable.ic_group,
+            compact = true
+        ))
+        form.addView(sectionPanel(
+            title = "Search customers",
+            description = "Search by name, account number or meter number."
+        ) {
+            addView(query)
+            addView(search)
+        })
+        form.addView(sectionPanel(
+            title = "Results",
+            description = "Matching customers appear here with their account and current status."
+        ) {
+            addView(results)
+        })
         addBack(form)
         fun loadCustomers() {
             setLoading(search, true, "Search")
@@ -2161,11 +2476,15 @@ class MainActivity : AppCompatActivity() {
                         if (clients.length() == 0) results.addView(empty("No customers found."))
                         for (index in 0 until clients.length()) {
                             val client = clients.optJSONObject(index) ?: continue
-                            val row = actionButton(
-                                "${client.optString("full_name")}\n" +
-                                    "${client.optString("account_number")} • ${client.optString("status")}"
+                            val row = card(
+                                client.optString("full_name"),
+                                listOf(client.optString("account_number"), client.optString("status"), client.optString("phone_number"))
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" • "),
+                                toneForStatus(client.optString("status"), toneBlue)
                             )
-                            row.isAllCaps = false
+                            row.isClickable = true
+                            row.isFocusable = true
                             row.setOnClickListener { showAdminCustomer(client.optInt("id")) }
                             results.addView(row)
                         }
@@ -2202,25 +2521,62 @@ class MainActivity : AppCompatActivity() {
                 val customer = data.optJSONObject("customer") ?: JSONObject()
                 val summary = data.optJSONObject("summary") ?: JSONObject()
                 val form = screen(customer.optString("full_name"), customer.optString("account_number"))
-                addField(form, "Status", customer.optString("status"))
-                addField(form, "Role", customer.optString("role"))
-                addField(form, "Phone", customer.optString("phone_number"))
-                addField(form, "Email", customer.optString("email"))
-                addField(form, "Outstanding", money(summary.optDouble("outstanding_amount")))
+                val recentBills = data.optJSONArray("recent_bills") ?: JSONArray()
+                val recentPayments = data.optJSONArray("recent_payments") ?: JSONArray()
+                form.addView(heroBanner(
+                    title = customer.optString("full_name").ifBlank { "Customer" },
+                    message = listOf(customer.optString("account_number"), customer.optString("status"))
+                        .filter(String::isNotBlank)
+                        .joinToString(" • "),
+                    eyebrow = "Customer detail",
+                    tone = toneForStatus(customer.optString("status"), toneBlue),
+                    iconRes = R.drawable.ic_person,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Outstanding", money(summary.optDouble("outstanding_amount")), R.drawable.ic_wallet, if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal),
+                    summaryCard("Bills", recentBills.length().toString(), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Payments", recentPayments.length().toString(), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Status", customer.optString("status").ifBlank { "Unknown" }, R.drawable.ic_warning_triangle, toneForStatus(customer.optString("status"), toneBlue))
+                )))
+                form.addView(sectionPanel(
+                    title = "Customer profile",
+                    description = "Key identity and contact fields arranged like the web customer detail workspace."
+                ) {
+                    addField(this, "Role", customer.optString("role"))
+                    addField(this, "Phone", customer.optString("phone_number"))
+                    addField(this, "Email", customer.optString("email"))
+                })
                 val bills = data.optJSONArray("recent_bills") ?: JSONArray()
-                if (bills.length() > 0) {
-                    form.addView(sectionTitle("Recent bills"))
-                    for (index in 0 until bills.length()) {
-                        val bill = bills.optJSONObject(index) ?: continue
-                        val row = actionButton(
-                            "${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due"
-                        )
-                        row.isAllCaps = false
-                        row.setOnClickListener { showAdminBill(bill.optInt("id"), id) }
-                        form.addView(row)
+                form.addView(sectionPanel(
+                    title = "Recent bills",
+                    description = "Latest invoice activity for this customer."
+                ) {
+                    if (bills.length() == 0) {
+                        addView(empty("No recent bills found."))
+                    } else {
+                        for (index in 0 until bills.length()) {
+                            val bill = bills.optJSONObject(index) ?: continue
+                            val row = card(
+                                bill.optString("billing_month"),
+                                listOf(money(bill.optDouble("outstanding_amount")) + " due", bill.optString("status"))
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" • "),
+                                toneForStatus(bill.optString("status"), toneBlue)
+                            )
+                            row.isClickable = true
+                            row.isFocusable = true
+                            row.setOnClickListener { showAdminBill(bill.optInt("id"), id) }
+                            addView(row)
+                        }
                     }
-                }
-                addPaymentRows(form, data.optJSONArray("recent_payments"))
+                })
+                form.addView(sectionPanel(
+                    title = "Recent payments",
+                    description = "Most recent customer settlements and recorded payment history."
+                ) {
+                    addPaymentRows(this, recentPayments)
+                })
                 addBack(form)
                 show(form)
             }
@@ -2236,16 +2592,56 @@ class MainActivity : AppCompatActivity() {
                 val bill = data.optJSONObject("bill") ?: JSONObject()
                 val customer = data.optJSONObject("customer") ?: JSONObject()
                 val form = screen("Bill detail", customer.optString("full_name"))
-                addField(form, "Account", bill.optString("account_number"))
-                addField(form, "Month", bill.optString("billing_month"))
-                addField(form, "Status", bill.optString("status"))
-                addField(form, "Amount", money(bill.optDouble("amount")))
-                addField(form, "Outstanding", money(bill.optDouble("outstanding_amount")))
-                addJsonRows(form, "Line items", bill.optJSONArray("line_items"), listOf("description", "line_type", "amount"))
-                addPaymentRows(form, bill.optJSONArray("payments"))
-                addJsonRows(form, "Credit notes", bill.optJSONArray("credit_notes"), listOf("type", "amount_credited", "note"))
-                addJsonRows(form, "Approval items", bill.optJSONArray("approval_items"), listOf("title", "status", "amount"))
-                addDocumentButton(form, "Open invoice", bill.optString("document_url"))
+                form.addView(heroBanner(
+                    title = "Bill detail #${bill.optInt("id").takeIf { it > 0 } ?: id}",
+                    message = listOf(customer.optString("full_name"), bill.optString("account_number"))
+                        .filter(String::isNotBlank)
+                        .joinToString(" • "),
+                    eyebrow = "Billing desk",
+                    tone = toneForStatus(bill.optString("status"), toneBlue),
+                    iconRes = R.drawable.ic_receipt,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Amount", money(bill.optDouble("amount")), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Outstanding", money(bill.optDouble("outstanding_amount")), R.drawable.ic_wallet, if (bill.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal),
+                    summaryCard("Status", bill.optString("status").ifBlank { "Unknown" }, R.drawable.ic_warning_triangle, toneForStatus(bill.optString("status"), toneBlue)),
+                    summaryCard("Month", bill.optString("billing_month").ifBlank { "—" }, R.drawable.ic_circle_clock, toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Bill summary",
+                    description = "Core bill details, aligned with the web bill-detail overview."
+                ) {
+                    addField(this, "Account", bill.optString("account_number"))
+                    addField(this, "Month", bill.optString("billing_month"))
+                    addField(this, "Due date", bill.optString("due_date"))
+                    addField(this, "Consumption", bill.optString("consumption"))
+                })
+                form.addView(sectionPanel(
+                    title = "Actions",
+                    description = "Open the invoice and review linked records from one place."
+                ) {
+                    addDocumentButton(this, "Open invoice", bill.optString("document_url"))
+                })
+                form.addView(sectionPanel(
+                    title = "Line items",
+                    description = "Charge breakdown for the selected bill."
+                ) {
+                    addJsonRows(this, "Line items", bill.optJSONArray("line_items"), listOf("description", "line_type", "amount"))
+                })
+                form.addView(sectionPanel(
+                    title = "Payments",
+                    description = "Payments already allocated to this bill."
+                ) {
+                    addPaymentRows(this, bill.optJSONArray("payments"))
+                })
+                form.addView(sectionPanel(
+                    title = "Adjustments and approvals",
+                    description = "Credit notes and approval activity affecting this bill."
+                ) {
+                    addJsonRows(this, "Credit notes", bill.optJSONArray("credit_notes"), listOf("type", "amount_credited", "note"))
+                    addJsonRows(this, "Approval items", bill.optJSONArray("approval_items"), listOf("title", "status", "amount"))
+                })
                 addBack(form)
                 show(form)
             }
@@ -2260,26 +2656,44 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val form = screen("Approvals", "Review pending financial requests.")
                 val summary = data.optJSONObject("summary")
-                if (summary != null) {
-                    summary.keys().forEach { key -> addField(form, key.replace('_', ' '), summary.optString(key)) }
-                }
                 val items = data.optJSONArray("items") ?: JSONArray()
-                if (items.length() == 0) form.addView(empty("No approval items found."))
-                for (index in 0 until items.length()) {
-                    val item = items.optJSONObject(index) ?: continue
-                    form.addView(card(
-                        item.optString("title", item.optString("reference_no", "Approval")),
-                        "${item.optString("status")} • ${money(item.optDouble("amount"))}"
-                    ))
-                    if (item.optString("status").lowercase() == "pending") {
-                        val approve = actionButton("Approve")
-                        approve.setOnClickListener { decideApproval(item.optInt("id"), "approve") }
-                        form.addView(approve)
-                        val reject = secondaryButton("Reject")
-                        reject.setOnClickListener { decideApproval(item.optInt("id"), "reject") }
-                        form.addView(reject)
-                    }
+                form.addView(heroBanner(
+                    title = "Approvals dashboard",
+                    message = "Track finance requests and take action from a single workflow queue.",
+                    eyebrow = "Workflow",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_circle_check,
+                    compact = true
+                ))
+                if (summary != null) {
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Pending", summary.opt("pending")?.toString().orEmpty().ifBlank { "0" }, R.drawable.ic_warning_triangle, toneAmber),
+                        summaryCard("Approved", summary.opt("approved")?.toString().orEmpty().ifBlank { "0" }, R.drawable.ic_circle_check, toneTeal),
+                        summaryCard("Rejected", summary.opt("rejected")?.toString().orEmpty().ifBlank { "0" }, R.drawable.ic_circle_alert, toneRed)
+                    )))
                 }
+                form.addView(sectionPanel(
+                    title = "Finance approval items",
+                    description = "Pending, approved, and rejected approval requests from the finance workflow."
+                ) {
+                    if (items.length() == 0) addView(empty("No approval items found."))
+                    for (index in 0 until items.length()) {
+                        val item = items.optJSONObject(index) ?: continue
+                        addView(card(
+                            item.optString("title", item.optString("reference_no", "Approval")),
+                            listOf(item.optString("status"), money(item.optDouble("amount")), item.optString("submitted_by_name"))
+                                .filter(String::isNotBlank)
+                                .joinToString(" • "),
+                            toneForStatus(item.optString("status"), toneBlue)
+                        ))
+                        if (item.optString("status").lowercase() == "pending") {
+                            addView(buttonRow(
+                                "Approve" to { decideApproval(item.optInt("id"), "approve") },
+                                "Reject" to { decideApproval(item.optInt("id"), "reject") }
+                            ))
+                        }
+                    }
+                })
                 addBack(form)
                 show(form)
             }
@@ -2645,7 +3059,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (mode == "staff") {
                     form.addView(buttonRow(
-                        (if (currentAvailable) "Set offline" else "Set online") to {
+                        if (currentAvailable) "Set offline" else "Set online" to {
                             api.request(
                                 "support_chat.php",
                                 "POST",
@@ -2813,7 +3227,7 @@ class MainActivity : AppCompatActivity() {
                     summaryCard("Availability", if (currentAvailable) "Online" else "Offline", R.drawable.ic_circle_alert, if (currentAvailable) toneTeal else toneAmber)
                 )))
                 form.addView(buttonRow(
-                    (if (currentAvailable) "Set offline" else "Set online") to {
+                    if (currentAvailable) "Set offline" else "Set online" to {
                         api.request(
                             "admin/messaging.php",
                             "POST",
@@ -3579,7 +3993,7 @@ class MainActivity : AppCompatActivity() {
                 ))
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
                 form.addView(sectionTitle("Find account activity"))
-                val typeChoices = accountTypeOptions()
+                val typeChoices = accountTypeOptions(includeAll = true)
                 val typePicker = dropdownInput("Account type", typeChoices, accountType)
                 form.addView(typePicker)
                 form.addView(secondaryButton("Apply type filter").apply {
@@ -3657,7 +4071,7 @@ class MainActivity : AppCompatActivity() {
                         summaryCard("Date", selectedEntry.optString("entry_date"), R.drawable.ic_circle_clock, toneBlue),
                         summaryCard(
                             "Reference",
-                            listOfNotNull(
+                            listOf(
                                 selectedEntry.optString("reference_type"),
                                 selectedEntry.opt("reference_id")?.toString().orEmpty().takeIf(String::isNotBlank)
                             ).filter(String::isNotBlank).joinToString(" #").ifBlank { "Manual" },
@@ -3857,32 +4271,54 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val registrationFee = data.optDouble("registration_fee")
                 val form = screen("Customer management", "Create, edit and manage customer accounts")
+                val users = data.optJSONArray("users") ?: JSONArray()
                 val (searchBox, search) = searchableIdentifierField("Search by name, account or meter", query) { item ->
                     val value = item.optString("selection_value").ifBlank { item.optString("account_number") }
                     childScreen(); loadCustomerManagement(value)
                 }
                 val searchBtn = actionButton("Search")
-                form.addView(searchBox)
-                form.addView(searchBtn)
+                form.addView(heroBanner(
+                    title = "Customer management",
+                    message = "Create, search and edit customer records from a grouped operations workspace.",
+                    eyebrow = "Operations",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_group,
+                    compact = true
+                ))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Customers", users.length().toString(), R.drawable.ic_group, toneBlue),
+                    summaryCard("Registration fee", money(registrationFee), R.drawable.ic_wallet, toneTeal)
+                )))
+                form.addView(sectionPanel(
+                    title = "Search and create",
+                    description = "Use the same search-first workflow as the web customers page, or create a new account directly."
+                ) {
+                    addView(searchBox)
+                    addView(searchBtn)
+                })
                 searchBtn.setOnClickListener { childScreen(); loadCustomerManagement(search.text.toString().trim()) }
                 val create = actionButton("New customer")
                 create.setOnClickListener { showCustomerCreateForm(registrationFee, data) }
-                form.addView(create)
-                val users = data.optJSONArray("users") ?: JSONArray()
-                form.addView(sectionTitle("Customers (${users.length()})"))
-                if (users.length() == 0) form.addView(empty("No customers found."))
-                for (index in 0 until users.length()) {
-                    val user = users.optJSONObject(index) ?: continue
-                    val row = card(
-                        "${user.optString("full_name")} • ${user.optString("account_number")}",
-                        "${user.optString("status")} • ${user.optString("phone_number")}\nMeters: ${user.optString("meter_numbers")}"
-                    )
-                    row.isClickable = true
-                    row.isFocusable = true
-                    val id = user.optInt("id")
-                    row.setOnClickListener { showCustomerEditForm(id, registrationFee) }
-                    form.addView(row)
-                }
+                form.addView(sectionPanel(
+                    title = "Customers (${users.length()})",
+                    description = "Open a customer record to edit details, meters and account status."
+                ) {
+                    addView(create)
+                    if (users.length() == 0) addView(empty("No customers found."))
+                    for (index in 0 until users.length()) {
+                        val user = users.optJSONObject(index) ?: continue
+                        val row = card(
+                            "${user.optString("full_name")} • ${user.optString("account_number")}",
+                            "${user.optString("status")} • ${user.optString("phone_number")}\nMeters: ${user.optString("meter_numbers")}",
+                            toneForStatus(user.optString("status"), toneBlue)
+                        )
+                        row.isClickable = true
+                        row.isFocusable = true
+                        val id = user.optInt("id")
+                        row.setOnClickListener { showCustomerEditForm(id, registrationFee) }
+                        addView(row)
+                    }
+                })
                 addBack(form)
                 show(form)
             }
@@ -3922,10 +4358,36 @@ class MainActivity : AppCompatActivity() {
         }
         val create = actionButton("Create customer")
         val form = screen("New customer", "Registration fee: ${money(registrationFee)}")
-        listOf(
-            firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin,
-            connectionType, unitRate, password, alreadyPaid, paidAmount, mpesaCode, sendStk, create
-        ).forEach(form::addView)
+        form.addView(heroBanner(
+            title = "Create customer",
+            message = "Register a new account and handle the registration fee from the same workflow.",
+            eyebrow = "Operations",
+            tone = toneBlue,
+            iconRes = R.drawable.ic_person,
+            compact = true
+        ))
+        form.addView(summaryCardGrid(listOf(
+            summaryCard("Registration fee", money(registrationFee), R.drawable.ic_wallet, toneTeal),
+            summaryCard("Connection", "New account", R.drawable.ic_meter, toneBlue)
+        )))
+        form.addView(sectionPanel(
+            title = "Identity and contact",
+            description = "Capture the core customer record first, similar to the web customer registration flow."
+        ) {
+            listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin).forEach(this::addView)
+        })
+        form.addView(sectionPanel(
+            title = "Service setup",
+            description = "Connection defaults and temporary access credentials for the new account."
+        ) {
+            listOf(connectionType, unitRate, password).forEach(this::addView)
+        })
+        form.addView(sectionPanel(
+            title = "Registration fee",
+            description = "Record existing payment or trigger a registration STK push when needed."
+        ) {
+            listOf(alreadyPaid, paidAmount, mpesaCode, sendStk, create).forEach(this::addView)
+        })
         addBack(form)
         create.setOnClickListener {
             if (firstName.text.isBlank() || lastName.text.isBlank() || phoneLocal.text.isBlank() ||
@@ -4009,22 +4471,52 @@ class MainActivity : AppCompatActivity() {
                 val newPassword = input("New password (optional)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
                 val save = actionButton("Save customer")
                 val form = screen(user.optString("full_name").takeIf(String::isNotBlank) ?: "Edit customer", user.optString("account_number"))
-                listOf(
-                    firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin,
-                    meterNumber, connectionType, unitRate, locationLabel, latitude, longitude, newPassword, save
-                ).forEach(form::addView)
-                addBack(form)
-                form.addView(buttonRow(
-                    "Activate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "active")) { showCustomerManagement() } },
-                    "Suspend" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "suspended")) { showCustomerManagement() } }
+                form.addView(heroBanner(
+                    title = user.optString("full_name").takeIf(String::isNotBlank) ?: "Edit customer",
+                    message = listOf(user.optString("account_number"), user.optString("status")).filter(String::isNotBlank).joinToString(" • "),
+                    eyebrow = "Customer account",
+                    tone = toneForStatus(user.optString("status"), toneBlue),
+                    iconRes = R.drawable.ic_person,
+                    compact = true
                 ))
-                form.addView(sectionTitle("Add another meter"))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Registration fee", money(registrationFee), R.drawable.ic_wallet, toneTeal),
+                    summaryCard("Meters", (data.optJSONArray("edit_user_meters") ?: JSONArray()).length().toString(), R.drawable.ic_meter, toneBlue),
+                    summaryCard("Status", user.optString("status").ifBlank { "Unknown" }, R.drawable.ic_circle_check, toneForStatus(user.optString("status"), toneBlue))
+                )))
+                form.addView(sectionPanel(
+                    title = "Identity and contact",
+                    description = "Edit personal and communication details for this account."
+                ) {
+                    listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin).forEach(this::addView)
+                })
+                form.addView(sectionPanel(
+                    title = "Service settings",
+                    description = "Primary meter, connection type, pricing override, and location metadata."
+                ) {
+                    listOf(meterNumber, connectionType, unitRate, locationLabel, latitude, longitude, newPassword, save).forEach(this::addView)
+                })
+                addBack(form)
+                form.addView(sectionPanel(
+                    title = "Account actions",
+                    description = "Status changes and additional meter operations for this customer."
+                ) {
+                    addView(buttonRow(
+                        "Activate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "active")) { showCustomerManagement() } },
+                        "Suspend" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "suspended")) { showCustomerManagement() } }
+                    ))
+                })
                 val extraMeterNumber = input("Additional meter number")
                 val extraMeterLabel = input("Meter label (optional)")
                 val addMeter = secondaryButton("Add additional meter")
-                form.addView(extraMeterNumber)
-                form.addView(extraMeterLabel)
-                form.addView(addMeter)
+                form.addView(sectionPanel(
+                    title = "Add another meter",
+                    description = "Attach an extra service point to this account."
+                ) {
+                    addView(extraMeterNumber)
+                    addView(extraMeterLabel)
+                    addView(addMeter)
+                })
                 addMeter.setOnClickListener {
                     if (extraMeterNumber.text.isBlank()) {
                         toast("Enter a meter number")
@@ -4037,33 +4529,37 @@ class MainActivity : AppCompatActivity() {
                             .put("additional_meter_label", extraMeterLabel.text.toString().trim())
                     ) { showCustomerEditForm(userId, registrationFee) }
                 }
-                form.addView(sectionTitle("Meters on this account"))
                 val meters = data.optJSONArray("edit_user_meters") ?: JSONArray()
-                if (meters.length() == 0) form.addView(empty("No meters recorded for this customer."))
-                for (index in 0 until meters.length()) {
-                    val meter = meters.optJSONObject(index) ?: continue
-                    val meterStatus = meter.optString("status", "active")
-                    form.addView(card(
-                        meter.optString("meter_number"),
-                        listOf(
-                            meter.optString("meter_label"),
-                            meterStatus,
-                            if (meter.optBoolean("is_primary")) "Primary meter" else ""
-                        ).filter(String::isNotBlank).joinToString(" • "),
-                        if (meterStatus.equals("active", ignoreCase = true)) toneBlue else toneNeutral
-                    ))
-                    if (meterStatus.equals("active", ignoreCase = true)) {
-                        val replace = secondaryButton("Replace this meter")
-                        replace.setOnClickListener { showMeterReplacementForm(userId, registrationFee, meter) }
-                        form.addView(replace)
+                form.addView(sectionPanel(
+                    title = "Meters on this account",
+                    description = "Registered service points and their replacement history."
+                ) {
+                    if (meters.length() == 0) addView(empty("No meters recorded for this customer."))
+                    for (index in 0 until meters.length()) {
+                        val meter = meters.optJSONObject(index) ?: continue
+                        val meterStatus = meter.optString("status", "active")
+                        addView(card(
+                            meter.optString("meter_number"),
+                            listOf(
+                                meter.optString("meter_label"),
+                                meterStatus,
+                                if (meter.optBoolean("is_primary")) "Primary meter" else ""
+                            ).filter(String::isNotBlank).joinToString(" • "),
+                            if (meterStatus.equals("active", ignoreCase = true)) toneBlue else toneNeutral
+                        ))
+                        if (meterStatus.equals("active", ignoreCase = true)) {
+                            val replace = secondaryButton("Replace this meter")
+                            replace.setOnClickListener { showMeterReplacementForm(userId, registrationFee, meter) }
+                            addView(replace)
+                        }
                     }
-                }
-                addRecordList(
-                    form,
-                    "Meter replacement history",
-                    data.optJSONArray("edit_user_meter_replacements"),
-                    listOf("replacement_meter_number", "meter_number", "old_meter_number")
-                )
+                    addRecordList(
+                        this,
+                        "Meter replacement history",
+                        data.optJSONArray("edit_user_meter_replacements"),
+                        listOf("replacement_meter_number", "meter_number", "old_meter_number")
+                    )
+                })
                 if (user.optString("status") != "active") {
                     val resendStk = secondaryButton("Resend registration STK push")
                     resendStk.setOnClickListener {
@@ -4071,7 +4567,12 @@ class MainActivity : AppCompatActivity() {
                             showCustomerEditForm(userId, registrationFee)
                         }
                     }
-                    form.addView(resendStk)
+                    form.addView(sectionPanel(
+                        title = "Registration follow-up",
+                        description = "Retry registration payment collection for inactive accounts."
+                    ) {
+                        addView(resendStk)
+                    })
                 }
                 val delete = destructiveButton("Delete customer")
                 delete.setOnClickListener {
@@ -4084,7 +4585,12 @@ class MainActivity : AppCompatActivity() {
                         }
                         .show()
                 }
-                form.addView(delete)
+                form.addView(sectionPanel(
+                    title = "Danger zone",
+                    description = "Permanent customer removal should only be used when you are certain."
+                ) {
+                    addView(delete)
+                })
                 save.setOnClickListener {
                     val body = JSONObject()
                         .put("form_type", "edit_user_save")
@@ -4674,47 +5180,77 @@ class MainActivity : AppCompatActivity() {
                 val searchHint = data.optJSONObject("field_metadata")
                     ?.optJSONObject("account_number")
                     ?.optString("placeholder")
-                    ?.takeIf(String::isNotBlank)
+                    .takeIf(String::isNotBlank)
                     ?: "Account, meter number or name"
                 val form = screen("Payments workspace", "Search a customer to record payments and adjustments")
+                form.addView(heroBanner(
+                    title = "Payments workspace",
+                    message = "Search a customer, review open bills and capture adjustments from one finance workspace.",
+                    eyebrow = "Collections",
+                    tone = toneBlue,
+                    iconRes = R.drawable.ic_wallet,
+                    compact = true
+                ))
                 val (searchBox, search) = searchableIdentifierField(searchHint, account) { item ->
                     val value = item.optString("selection_value").ifBlank { item.optString("account_number") }
                     childScreen(); loadPaymentsWorkspace(value)
                 }
                 val searchBtn = actionButton("Search account")
-                form.addView(searchBox)
-                form.addView(searchBtn)
+                form.addView(sectionPanel(
+                    title = "Find customer account",
+                    description = "Look up by account number, meter or customer name."
+                ) {
+                    addView(searchBox)
+                    addView(searchBtn)
+                })
                 searchBtn.setOnClickListener { childScreen(); loadPaymentsWorkspace(search.text.toString().trim()) }
                 if (currentUser != null) {
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Customer", currentUser.optString("account_number"), R.drawable.ic_person, toneBlue),
+                        summaryCard("Wallet", money(data.optDouble("wallet_balance")), R.drawable.ic_wallet, toneTeal),
+                        summaryCard("Status", currentUser.optString("status").ifBlank { "Unknown" }, R.drawable.ic_circle_check, toneForStatus(currentUser.optString("status"), toneBlue))
+                    )))
                     form.addView(card(currentUser.optString("full_name"), "${currentUser.optString("account_number")} • ${currentUser.optString("status")}"))
-                    form.addView(card("Wallet balance", money(data.optDouble("wallet_balance"))))
                     val bills = data.optJSONArray("bills") ?: JSONArray()
-                    form.addView(sectionTitle("Open bills"))
-                    if (bills.length() == 0) form.addView(empty("No open bills."))
-                    for (index in 0 until bills.length()) {
-                        val bill = bills.optJSONObject(index) ?: continue
-                        val billId = bill.optInt("id")
-                        form.addView(card("${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due", bill.optString("status")))
-                        form.addView(buttonRow(
-                            "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
-                            "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
-                        ))
-                    }
-                    val recordBalance = secondaryButton("Record payment to account balance")
-                    recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
-                    form.addView(recordBalance)
+                    form.addView(sectionPanel(
+                        title = "Open bills",
+                        description = "Target a specific invoice or post to the customer balance, similar to the web payments workspace."
+                    ) {
+                        if (bills.length() == 0) addView(empty("No open bills."))
+                        for (index in 0 until bills.length()) {
+                            val bill = bills.optJSONObject(index) ?: continue
+                            val billId = bill.optInt("id")
+                            addView(card("${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due", bill.optString("status"), toneForStatus(bill.optString("status"), toneBlue)))
+                            addView(buttonRow(
+                                "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
+                                "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
+                            ))
+                        }
+                        val recordBalance = secondaryButton("Record payment to account balance")
+                        recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
+                        addView(recordBalance)
+                    })
                     val payments = data.optJSONArray("payments") ?: JSONArray()
-                    form.addView(sectionTitle("Completed payments"))
-                    if (payments.length() == 0) form.addView(empty("No completed payments."))
-                    for (index in 0 until payments.length()) {
-                        val payment = payments.optJSONObject(index) ?: continue
-                        val paymentId = payment.optInt("id")
-                        form.addView(card(money(payment.optDouble("amount")), "${payment.optString("status")} • ${payment.optString("transaction_date")}"))
-                        val adjust = secondaryButton("Request adjustment")
-                        adjust.setOnClickListener { showPaymentAdjustmentForm(currentUser.optString("account_number"), paymentId) }
-                        form.addView(adjust)
-                    }
-                    addRecordList(form, "Adjustment requests", data.optJSONArray("payment_adjustments"), listOf("adjustment_type", "status"))
+                    form.addView(sectionPanel(
+                        title = "Completed payments",
+                        description = "Review settled transactions and raise correction requests when needed."
+                    ) {
+                        if (payments.length() == 0) addView(empty("No completed payments."))
+                        for (index in 0 until payments.length()) {
+                            val payment = payments.optJSONObject(index) ?: continue
+                            val paymentId = payment.optInt("id")
+                            addView(card(money(payment.optDouble("amount")), "${payment.optString("status")} • ${payment.optString("transaction_date")}"))
+                            val adjust = secondaryButton("Request adjustment")
+                            adjust.setOnClickListener { showPaymentAdjustmentForm(currentUser.optString("account_number"), paymentId) }
+                            addView(adjust)
+                        }
+                    })
+                    form.addView(sectionPanel(
+                        title = "Adjustment requests",
+                        description = "Pending and processed payment adjustment requests for this customer."
+                    ) {
+                        addRecordList(this, "Adjustment requests", data.optJSONArray("payment_adjustments"), listOf("adjustment_type", "status"))
+                    })
                 }
                 addBack(form)
                 show(form)
@@ -5003,12 +5539,12 @@ class MainActivity : AppCompatActivity() {
                 val billingMonth = datePickerInput(
                     "Billing month",
                     fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")),
-                    metadata.optJSONObject("billing_month")?.optString("picker_mode").orEmpty().ifBlank { "date" }
+                    metadata.optJSONObject("billing_month")?.optString("picker_mode").ifBlank { "date" }
                 )
                 val dueDate = datePickerInput(
                     "Due date",
                     fieldDefaultValue(data, "due_date", data.optString("default_due_date")),
-                    metadata.optJSONObject("due_date")?.optString("picker_mode").orEmpty().ifBlank { "date" }
+                    metadata.optJSONObject("due_date")?.optString("picker_mode").ifBlank { "date" }
                 )
                 val submit = actionButton("Create bill from reading")
                 val form = screen("Invoicing", "Create a pending bill from a meter reading")
@@ -5263,7 +5799,11 @@ class MainActivity : AppCompatActivity() {
         orientation = LinearLayout.VERTICAL
         contentDescription = header
         setPadding(dp(20), 0, dp(20), dp(36))
-        setBackgroundColor(pageBackground)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            colors = intArrayOf(pageBackground, Color.argb(255, 248, 251, 255), pageBackground)
+            orientation = GradientDrawable.Orientation.TOP_BOTTOM
+        }
         addView(headerBar(header, subtitle), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -5279,29 +5819,49 @@ class MainActivity : AppCompatActivity() {
 
     private fun headerBar(header: String, subtitle: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(22), dp(20), dp(22), dp(20))
+        setPadding(dp(22), dp(18), dp(22), dp(22))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            val r = dp(24).toFloat()
+            val r = dp(30).toFloat()
             cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
-            colors = intArrayOf(navy, navyDark)
-            orientation = GradientDrawable.Orientation.LEFT_RIGHT
+            colors = intArrayOf(navyDark, navy, primaryDark)
+            orientation = GradientDrawable.Orientation.TL_BR
         }
-        addView(TextView(this@MainActivity).apply {
-            text = getString(R.string.app_name).uppercase(Locale.getDefault())
-            textSize = 11.5f
-            letterSpacing = 0.12f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.rgb(198, 214, 235))
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = getString(R.string.app_name).uppercase(Locale.getDefault())
+                textSize = 11.5f
+                letterSpacing = 0.14f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.rgb(210, 224, 243))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "LIVE"
+                textSize = 10.5f
+                letterSpacing = 0.12f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = roundedDrawable(Color.argb(72, 184, 137, 43), Color.argb(140, 226, 192, 114), 99f)
+            })
         })
-        addView(title(header))
+        addView(title(header).apply { setPadding(0, dp(10), 0, 0) })
         if (subtitle.isNotBlank()) {
             addView(body(subtitle).apply {
-                setTextColor(Color.rgb(198, 214, 235))
-                textSize = 14f
-                setPadding(0, dp(6), 0, 0)
+                setTextColor(Color.rgb(214, 225, 240))
+                textSize = 14.5f
+                setPadding(0, dp(8), 0, 0)
             })
         }
+        addView(View(this@MainActivity).apply {
+            setBackgroundColor(Color.argb(115, 216, 183, 103))
+            layoutParams = LinearLayout.LayoutParams(dp(92), dp(3)).apply {
+                topMargin = dp(14)
+            }
+        })
     }
 
     private fun backNavigationRow(action: () -> Unit) = LinearLayout(this).apply {
@@ -5331,26 +5891,86 @@ class MainActivity : AppCompatActivity() {
 
     private fun title(value: String) = TextView(this).apply {
         text = value
-        textSize = 21f
-        setTypeface(typeface, Typeface.BOLD)
+        textSize = 24f
+        typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
         setTextColor(Color.WHITE)
-        letterSpacing = -0.01f
+        letterSpacing = 0.01f
+        lineSpacingExtra = dp(2).toFloat()
     }
 
     private fun sectionTitle(value: String) = TextView(this).apply {
         text = value
-        textSize = 17f
-        setTypeface(typeface, Typeface.BOLD)
-        setTextColor(textPrimary)
-        letterSpacing = 0.01f
-        setPadding(dp(2), dp(22), 0, dp(12))
+        textSize = 19f
+        typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+        setTextColor(navyDark)
+        letterSpacing = 0.015f
+        setPadding(dp(2), dp(24), 0, dp(12))
     }
 
     private fun body(value: String) = TextView(this).apply {
         text = value
-        textSize = 15f
+        textSize = 15.5f
         setTextColor(muted)
         setLineSpacing(dp(3).toFloat(), 1f)
+    }
+
+    private fun sectionPanel(
+        title: String,
+        description: String,
+        content: LinearLayout.() -> Unit
+    ) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = roundedDrawable(cardBackground, border, 24f)
+        elevation = dp(2).toFloat()
+        setPadding(dp(18), dp(18), dp(18), dp(18))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(14) }
+        addView(TextView(this@MainActivity).apply {
+            text = title
+            textSize = 18f
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            setTextColor(navyDark)
+        })
+        if (description.isNotBlank()) {
+            addView(body(description).apply {
+                setPadding(0, dp(6), 0, dp(14))
+            })
+        }
+        content()
+    }
+
+    private fun spotlightPanel(title: String, message: String, meta: String, tone: Tone) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = roundedDrawable(tone.tint, tone.border, 24f)
+        elevation = dp(2).toFloat()
+        setPadding(dp(18), dp(18), dp(18), dp(18))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(16) }
+        addView(TextView(this@MainActivity).apply {
+            text = title.uppercase(Locale.getDefault())
+            textSize = 11f
+            letterSpacing = 0.12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(tone.onTint)
+        })
+        addView(TextView(this@MainActivity).apply {
+            text = message
+            textSize = 19f
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            setTextColor(tone.onTint)
+            setPadding(0, dp(10), 0, dp(6))
+            lineSpacingExtra = dp(2).toFloat()
+        })
+        if (meta.isNotBlank()) {
+            addView(body(meta).apply {
+                setTextColor(tone.onTint)
+                alpha = 0.82f
+            })
+        }
     }
 
     private fun iconView(resId: Int, color: Int, sizeDp: Int = 24) = ImageView(this).apply {
@@ -5416,7 +6036,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun empty(value: String) = body(value).apply {
         gravity = Gravity.CENTER
-        setPadding(dp(18), dp(24), dp(18), dp(24))
+        setPadding(dp(20), dp(26), dp(20), dp(26))
         background = roundedDrawable(cardBackgroundMuted, border, 18f)
     }
 
@@ -5666,12 +6286,12 @@ class MainActivity : AppCompatActivity() {
             val type = formatAccountType(account.optString("account_type"))
             val title = listOf(code, name).filter(String::isNotBlank).joinToString(" • ")
             val status = if (account.optBoolean("is_active", true)) "Active" else "Inactive"
-            (id.toString()) to listOfNotNull(title, type, status.takeIf { includeInactive }).filter(String::isNotBlank).joinToString(" — ")
+            (id.toString()) to listOf(title, type, status.takeIf { includeInactive }).filterNotNull().filter(String::isNotBlank).joinToString(" — ")
         }
 
-    private fun accountTypeOptions(): List<Pair<String, String>> {
+    private fun accountTypeOptions(includeAll: Boolean = false): List<Pair<String, String>> {
         val options = mutableListOf<Pair<String, String>>()
-        options += "" to "All account types"
+        if (includeAll) options += "" to "All account types"
         options += listOf(
             "asset" to "Asset",
             "liability" to "Liability",
@@ -5771,7 +6391,7 @@ class MainActivity : AppCompatActivity() {
         val topLevelOptions = topLevelKey?.let { key ->
             data.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
         }.orEmpty()
-        return topLevelOptions.ifEmpty { fallback }
+        return if (topLevelOptions.isNotEmpty()) topLevelOptions else fallback
     }
 
     private fun formMetaOptions(
@@ -5780,7 +6400,7 @@ class MainActivity : AppCompatActivity() {
         fallback: List<Pair<String, String>> = emptyList()
     ): List<Pair<String, String>> {
         val options = formMetadata.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
-        return options.ifEmpty { fallback }
+        return if (options.isNotEmpty()) options else fallback
     }
 
     private fun splitPhoneNumberForForm(
@@ -6017,21 +6637,21 @@ class MainActivity : AppCompatActivity() {
         }
         addView(LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(18), dp(16), dp(18), dp(16))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             addView(TextView(this@MainActivity).apply {
                 text = label
-                textSize = 12.5f
+                textSize = 12f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(muted)
-                letterSpacing = 0.03f
+                letterSpacing = 0.06f
             })
             addView(TextView(this@MainActivity).apply {
                 text = value
-                textSize = 17f
+                textSize = 17.5f
                 setTextColor(textPrimary)
                 setLineSpacing(dp(3).toFloat(), 1f)
-                setPadding(0, dp(4), 0, 0)
+                setPadding(0, dp(6), 0, 0)
             })
         })
     }
@@ -6064,10 +6684,10 @@ class MainActivity : AppCompatActivity() {
     private fun summaryCard(label: String, value: String, iconRes: Int, tone: Tone) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         clipToOutline = true
-        setPadding(dp(16), dp(16), dp(16), dp(16))
+        setPadding(dp(16), dp(16), dp(16), dp(18))
         background = roundedDrawable(tone.tint, tone.border, 18f)
         elevation = dp(2).toFloat()
-        minimumHeight = dp(118)
+        minimumHeight = dp(126)
         addView(LinearLayout(this@MainActivity).apply {
             background = roundedDrawable(cardBackground, cardBackground, 12f)
             setPadding(dp(9), dp(9), dp(9), dp(9))
@@ -6075,9 +6695,9 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { bottomMargin = dp(12) })
         addView(TextView(this@MainActivity).apply {
             text = value
-            textSize = 18f
+            textSize = 19f
             setTextColor(tone.onTint)
-            setTypeface(typeface, Typeface.BOLD)
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
@@ -6094,7 +6714,7 @@ class MainActivity : AppCompatActivity() {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         clipToOutline = true
-        setPadding(dp(18), dp(16), dp(18), dp(16))
+        setPadding(dp(18), dp(18), dp(18), dp(18))
         background = roundedDrawable(cardBackground, border, 18f)
         elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(
@@ -6112,8 +6732,8 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             addView(TextView(this@MainActivity).apply {
                 text = name.ifBlank { "Customer" }
-                textSize = 17f
-                setTypeface(typeface, Typeface.BOLD)
+                textSize = 18f
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
                 setTextColor(textPrimary)
                 maxLines = 1
             })
@@ -6155,19 +6775,19 @@ class MainActivity : AppCompatActivity() {
         isClickable = true
         isFocusable = true
         minimumHeight = dp(48)
-        setPadding(dp(14), dp(14), dp(14), dp(14))
-        background = roundedDrawable(cardBackground, border, 16f)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        background = roundedDrawable(cardBackground, border, 18f)
         elevation = dp(2).toFloat()
         setOnClickListener { action() }
         addView(LinearLayout(this@MainActivity).apply {
-            background = roundedDrawable(tintNavy, tintNavy, 12f)
+            background = roundedDrawable(tintNavy, border, 14f)
             gravity = Gravity.CENTER
-            setPadding(dp(9), dp(9), dp(9), dp(9))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             addView(iconView(iconRes, primaryDark, 18))
-        }, LinearLayout.LayoutParams(dp(36), dp(36)).apply { bottomMargin = dp(10) })
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { bottomMargin = dp(12) })
         addView(TextView(this@MainActivity).apply {
             text = label
-            textSize = 13.5f
+            textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(textPrimary)
             maxLines = 2
@@ -6176,6 +6796,46 @@ class MainActivity : AppCompatActivity() {
 
     private fun addField(parent: LinearLayout, label: String, value: String) {
         parent.addView(card(label, value.ifBlank { "—" }))
+    }
+
+    private fun addMenu(parent: LinearLayout, label: String, action: () -> Unit, description: String = "") {
+        parent.addView(navRow(label, description, action))
+    }
+
+    private fun navRow(title: String, description: String, action: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = true
+        isFocusable = true
+        minimumHeight = dp(50)
+        background = roundedDrawable(cardBackground, border, 16f)
+        setPadding(dp(16), dp(14), dp(14), dp(14))
+        elevation = dp(2).toFloat()
+        contentDescription = if (description.isNotBlank()) "$title. $description" else title
+        setOnClickListener { action() }
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(9) }
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 15.5f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(textPrimary)
+            })
+            if (description.isNotBlank()) {
+                addView(body(description).apply {
+                    textSize = 12.5f
+                    setPadding(0, dp(2), 0, 0)
+                })
+            }
+        })
+        addView(iconView(R.drawable.ic_chevron_right, muted, 20).apply {
+            (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8)
+        })
     }
 
     private fun addWorkspace(
@@ -6190,7 +6850,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipToOutline = true
-            setPadding(dp(16), dp(16), dp(15), dp(16))
+            setPadding(dp(16), dp(18), dp(15), dp(18))
             background = roundedDrawable(cardBackground, border, 18f)
             elevation = dp(2).toFloat()
             isClickable = true
@@ -6213,7 +6873,7 @@ class MainActivity : AppCompatActivity() {
                 addView(TextView(this@MainActivity).apply {
                     text = label
                     textSize = 16f
-                    setTypeface(typeface, Typeface.BOLD)
+                    typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
                     setTextColor(textPrimary)
                 })
                 addView(body(description).apply {
@@ -6264,15 +6924,15 @@ class MainActivity : AppCompatActivity() {
             })
             addView(TextView(this@MainActivity).apply {
                 text = title
-                textSize = if (compact) 20f else 22f
-                setTypeface(typeface, Typeface.BOLD)
+                textSize = if (compact) 21f else 23f
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
                 setTextColor(tone.onTint)
                 setPadding(0, dp(4), 0, 0)
             })
             if (message.isNotBlank()) {
                 addView(TextView(this@MainActivity).apply {
                     text = message
-                    textSize = 14f
+                    textSize = 14.5f
                     setTextColor(tone.onTint)
                     setLineSpacing(dp(3).toFloat(), 1f)
                     setPadding(0, dp(6), 0, 0)
@@ -6576,11 +7236,9 @@ class MainActivity : AppCompatActivity() {
             val title = titleFields.map { row.optString(it) }.firstOrNull(String::isNotBlank)
                 ?: (heading.removeSuffix("s") + " #" + (index + 1))
             val excluded = titleFields.toSet()
-            val urlKeys = row.keys().asSequence().filter { isLinkField(it, row.opt(it)) }.sorted().toList()
             val scalarKeys = row.keys().asSequence()
                 .filter { key ->
-                    key !in excluded && key != "id" && key !in urlKeys &&
-                        row.opt(key) !is JSONObject && row.opt(key) !is JSONArray
+                    key !in excluded && key != "id" && row.opt(key) !is JSONObject && row.opt(key) !is JSONArray
                 }
                 .sorted()
                 .take(6)
@@ -6599,7 +7257,6 @@ class MainActivity : AppCompatActivity() {
                 view.setOnClickListener { onClick(row) }
             }
             parent.addView(view)
-            urlKeys.forEach { key -> parent.addView(linkButton(key, row.optString(key), title)) }
             nestedKeys.forEach { key ->
                 renderNode(
                     parent,
@@ -6645,55 +7302,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun isLinkField(key: String, value: Any?): Boolean {
-        if (!key.endsWith("_url")) return false
-        val text = (value as? String)?.trim().orEmpty()
-        return text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true)
-    }
-
-    private fun linkButton(key: String, url: String, context: String): View {
-        val name = key.removeSuffix("_url").removePrefix("public_").replace('_', ' ')
-            .replace("pdf", "PDF").trim().ifBlank { "document" }
-        val inApp = listOf("document", "receipt", "invoice", "pdf", "statement", "photo", "image")
-            .any { key.contains(it, ignoreCase = true) }
-        return secondaryButton("Open $name").apply {
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Open ${name.replaceFirstChar(Char::uppercase)}?")
-                    .setMessage(
-                        if (inApp) "Do you want to open this $name for $context?"
-                        else "Do you want to open this $name for $context in your browser?"
-                    )
-                    .setPositiveButton("Open") { _, _ ->
-                        if (inApp) {
-                            showDocumentViewer(url, name.replaceFirstChar(Char::uppercase))
-                        } else {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
-                            } catch (_: Exception) {
-                                toast("No app can open this link.")
-                            }
-                        }
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
-        }
-    }
-
     private fun renderNode(parent: LinearLayout, label: String, value: Any?) {
         when (value) {
             is JSONObject -> {
                 if (value.length() == 0) return
                 val scalarCards = mutableListOf<View>()
-                val linkButtons = mutableListOf<View>()
                 val nestedItems = mutableListOf<Pair<String, Any?>>()
                 value.keys().asSequence().sorted().forEach { key ->
                     val child = value.opt(key)
                     val childLabel = key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }
-                    when {
-                        isLinkField(key, child) -> linkButtons += linkButton(key, child.toString(), label)
-                        child is JSONObject || child is JSONArray -> nestedItems += childLabel to child
+                    when (child) {
+                        is JSONObject, is JSONArray -> nestedItems += childLabel to child
                         else -> if (child != null && child != JSONObject.NULL) {
                             scalarCards += summaryCard(
                                 childLabel,
@@ -6704,10 +7323,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-                if (scalarCards.isNotEmpty() || linkButtons.isNotEmpty()) {
+                if (scalarCards.isNotEmpty()) {
                     parent.addView(sectionTitle(label))
-                    if (scalarCards.isNotEmpty()) parent.addView(summaryCardGrid(scalarCards))
-                    linkButtons.forEach(parent::addView)
+                    parent.addView(summaryCardGrid(scalarCards))
                 }
                 nestedItems.forEach { (childLabel, child) -> renderNode(parent, childLabel, child) }
             }
