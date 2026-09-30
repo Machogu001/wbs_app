@@ -1167,11 +1167,20 @@ class MainActivity : AppCompatActivity() {
             ).joinToString(" • "),
             tone = if (outstanding > 0.01) toneAmber else toneBlue
         ))
-        form.addView(identityCard(
-            name,
-            user?.optString("account_number").orEmpty(),
-            user?.optString("role", "customer").orEmpty().replaceFirstChar(Char::uppercase)
-        ))
+        form.addView(sectionPanel(
+            title = "Signed in",
+            description = "Keep your account details and session controls close to the top of the dashboard."
+        ) {
+            addView(identityCard(
+                name,
+                user?.optString("account_number").orEmpty(),
+                user?.optString("role", "customer").orEmpty().replaceFirstChar(Char::uppercase)
+            ))
+            addView(buttonRow(
+                "Profile" to ::showProfile,
+                "Sign out" to ::performSignOut
+            ))
+        })
         val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
         val accountSummaryCards = if (summaryCards.isNotEmpty()) {
             summaryCards
@@ -1227,7 +1236,6 @@ class MainActivity : AppCompatActivity() {
             description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
         ) {
             addView(quickActionGrid(listOf(
-            Triple("Profile", R.drawable.ic_person, ::showProfile),
             Triple("Statement", R.drawable.ic_receipt, ::showStatement),
             Triple("Bills", R.drawable.ic_wallet) { showBills() },
             Triple("Payments", R.drawable.ic_circle_check, ::showPayments),
@@ -1246,7 +1254,6 @@ class MainActivity : AppCompatActivity() {
             addWorkspace(form, "Operations & support", "Demand notices, inquiries, integrations and publishing", R.drawable.ic_support, ::showOperationsWorkspace)
             addWorkspace(form, "System administration", "Staff access, permissions, settings and audit logs", R.drawable.ic_admin, ::showSystemWorkspace)
         }
-        form.addView(signOutButton())
         show(form)
     }
 
@@ -6023,10 +6030,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun openExternal(uri: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, uri.toUri()))
+            startActivity(Intent(Intent.ACTION_VIEW, normalizeExternalUrl(uri).toUri()))
         } catch (_: Exception) {
             toast(getString(R.string.link_unavailable))
         }
+    }
+
+    private fun normalizeExternalUrl(url: String): String = runCatching {
+        api.resolveUrl(url)
+    }.getOrElse {
+        url
     }
 
     private fun empty(value: String) = body(value).apply {
@@ -6919,7 +6932,7 @@ class MainActivity : AppCompatActivity() {
         parent.addView(secondaryButton(label).apply {
             setOnClickListener {
                 try {
-                    startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                    startActivity(Intent(Intent.ACTION_VIEW, normalizeExternalUrl(url).toUri()))
                 } catch (_: Exception) {
                     toast("No app can open this link.")
                 }
@@ -6930,7 +6943,12 @@ class MainActivity : AppCompatActivity() {
     private fun addDocumentButton(parent: LinearLayout, label: String, url: String) {
         if (url.isBlank()) return
         parent.addView(secondaryButton(label).apply {
-            setOnClickListener { showDocumentViewer(url, label.removePrefix("View ").removePrefix("Open ")) }
+            setOnClickListener {
+                showDocumentViewer(
+                    normalizeExternalUrl(url),
+                    label.removePrefix("View ").removePrefix("Open ")
+                )
+            }
         })
     }
 
@@ -7281,10 +7299,10 @@ class MainActivity : AppCompatActivity() {
                     )
                     .setPositiveButton("Open") { _, _ ->
                         if (inApp) {
-                            showDocumentViewer(url, name.replaceFirstChar(Char::uppercase))
+                            showDocumentViewer(normalizeExternalUrl(url), name.replaceFirstChar(Char::uppercase))
                         } else {
                             try {
-                                startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                                startActivity(Intent(Intent.ACTION_VIEW, normalizeExternalUrl(url).toUri()))
                             } catch (_: Exception) {
                                 toast("No app can open this link.")
                             }
@@ -7405,12 +7423,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun signOutButton() = secondaryButton("Sign out").apply {
-        setOnClickListener {
-            api.request("logout.php", "POST") {
-                runOnUiThread { clearSession() }
-            }
+    private fun performSignOut() {
+        api.request("logout.php", "POST") {
+            runOnUiThread { clearSession() }
         }
+    }
+
+    private fun signOutButton() = secondaryButton("Sign out").apply {
+        setOnClickListener { performSignOut() }
     }
 
     private fun clearSession() {

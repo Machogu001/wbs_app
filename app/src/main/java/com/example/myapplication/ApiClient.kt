@@ -22,6 +22,12 @@ class ApiClient(private val tokenProvider: () -> String?) {
     private val executor = Executors.newFixedThreadPool(3)
     private val baseUrl = "https://wbs.bremac.co.ke/api/mobile/"
 
+    fun resolveUrl(url: String): String {
+        val trimmed = url.trim()
+        if (trimmed.isBlank()) return trimmed
+        return URL(URL(baseUrl), trimmed).toString()
+    }
+
     fun request(
         path: String,
         method: String = "GET",
@@ -88,7 +94,7 @@ class ApiClient(private val tokenProvider: () -> String?) {
     ) {
         executor.execute {
             callback(runCatching {
-                var currentUrl = URL(documentUrl)
+                var currentUrl = URL(resolveUrl(documentUrl))
                 require(currentUrl.protocol.equals("https", ignoreCase = true)) {
                     "Only secure HTTPS documents can be opened."
                 }
