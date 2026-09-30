@@ -2238,7 +2238,6 @@ class MainActivity : AppCompatActivity() {
             description = "Refresh the live payment state or open the final receipt when available."
         ) {
             if (isFinal && isSuccessful) {
-                addDocumentButton(this, "View receipt", payment.optString("receipt_url"))
                 addDocumentButton(this, "View receipt PDF", payment.optString("receipt_pdf_url"))
             }
             val refresh = secondaryButton("Refresh status")
@@ -2461,7 +2460,6 @@ class MainActivity : AppCompatActivity() {
                     title = "Next steps",
                     description = "Open the hosted receipt or PDF copy when available."
                 ) {
-                    addDocumentButton(this, "View receipt", payment.optString("receipt_url"))
                     addDocumentButton(this, "View receipt PDF", payment.optString("receipt_pdf_url"))
                 })
                 addBack(form)
