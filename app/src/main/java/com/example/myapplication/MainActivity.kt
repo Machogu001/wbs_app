@@ -86,6 +86,22 @@ private fun JSONArray.toOptionPairs(): List<Pair<String, String>> {
     return pairs
 }
 
+private fun JSONArray.toFlexibleOptionPairs(): List<Pair<String, String>> {
+ val pairs = mutableListOf<Pair<String, String>>()
+ for (index in 0 until length()) {
+ val option = optJSONObject(index) ?: continue
+ val value = option.opt("value")?.toString().orEmpty().ifBlank {
+ option.optString("key")
+ }
+ if (value.isBlank()) continue
+ val label = option.optString("label").ifBlank {
+ option.optString("title").ifBlank { value }
+ }
+ pairs += value to label
+ }
+ return pairs
+}
+
 class MainActivity : AppCompatActivity() {
     private companion object {
         private const val PREF_THEME_PREFERENCE = "theme_preference"
@@ -1124,41 +1140,54 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderDashboard(data: JSONObject) {
         val summary = data.optJSONObject("summary") ?: JSONObject()
+        val screen = data.optJSONObject("screen") ?: JSONObject()
         val user = currentUser
         val name = user?.optString("full_name")?.takeIf(String::isNotBlank) ?: "customer"
-        val form = screen("My Water Bill", "Welcome back")
+        val form = screen(screen.optString("title").ifBlank { "My Water Bill" }, "Welcome back")
         form.addView(identityCard(
             name,
             user?.optString("account_number").orEmpty(),
             user?.optString("role", "customer").orEmpty().replaceFirstChar(Char::uppercase)
         ))
         form.addView(sectionTitle("Account summary"))
-        form.addView(summaryCardGrid(listOf(
-            summaryCard(
-                "Outstanding",
-                money(summary.optDouble("outstanding_amount")),
-                R.drawable.ic_wallet,
-                if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
-            ),
-            summaryCard(
-                "Pending bills",
-                summary.optInt("pending_bills").toString(),
-                R.drawable.ic_receipt,
-                toneBlue
-            ),
-            summaryCard(
-                "Overdue bills",
-                summary.optInt("overdue_bills").toString(),
-                R.drawable.ic_warning_triangle,
-                if (summary.optInt("overdue_bills") > 0) toneRed else toneTeal
-            ),
-            summaryCard(
-                "Active meters",
-                summary.optInt("active_meters").toString(),
-                R.drawable.ic_meter,
-                toneTeal
-            )
-        )))
+        val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
+        if (summaryCards.isNotEmpty()) {
+            form.addView(summaryCardGrid(summaryCards))
+        } else {
+            form.addView(summaryCardGrid(listOf(
+                summaryCard(
+                    "Outstanding",
+                    money(summary.optDouble("outstanding_amount")),
+                    R.drawable.ic_wallet,
+                    if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
+                ),
+                summaryCard(
+                    "Pending bills",
+                    summary.optInt("pending_bills").toString(),
+                    R.drawable.ic_receipt,
+                    toneBlue
+                ),
+                summaryCard(
+                    "Overdue bills",
+                    summary.optInt("overdue_bills").toString(),
+                    R.drawable.ic_warning_triangle,
+                    if (summary.optInt("overdue_bills") > 0) toneRed else toneTeal
+                ),
+                summaryCard(
+                    "Active meters",
+                    summary.optInt("active_meters").toString(),
+                    R.drawable.ic_meter,
+                    toneTeal
+                )
+            )))
+        }
+        addRecordList(form, "Latest bills", data.optJSONArray("latest_bills"), listOf("billing_month", "type_label")) { row ->
+            showBill(row.optInt("id"))
+        }
+        data.optJSONObject("latest_payment")?.let { latestPayment ->
+            addPaymentRows(form, JSONArray().put(latestPayment), true)
+        }
+        addRecordList(form, "Meters", data.optJSONArray("meters"), listOf("meter_number", "meter_label"))
         form.addView(sectionTitle("Quick actions"))
         form.addView(quickActionGrid(listOf(
             Triple("Profile", R.drawable.ic_person, ::showProfile),
@@ -1335,15 +1364,21 @@ class MainActivity : AppCompatActivity() {
                         if (serverPreference != currentThemePreference()) {
                             applyThemePreference(serverPreference)
                         }
-                        renderProfile(user, serverPreference, availablePreferences)
+                        renderProfile(meResponse.data(), user, serverPreference, availablePreferences)
                     }
                 }
             }
         }
     }
 
-    private fun renderProfile(user: JSONObject, themePreference: String, availablePreferences: List<String>) {
-        val form = screen("Profile", user.optString("full_name"))
+    private fun renderProfile(profileData: JSONObject, user: JSONObject, themePreference: String, availablePreferences: List<String>) {
+        val screen = profileData.optJSONObject("screen") ?: JSONObject()
+        val form = screen(screen.optString("title").ifBlank { "Profile" }, user.optString("full_name"))
+        val alerts = screen.optJSONArray("alerts") ?: JSONArray()
+        for (index in 0 until alerts.length()) {
+            val alert = alerts.optJSONObject(index) ?: continue
+            addScreenAlert(form, alert)
+        }
         addField(form, "Account", user.optString("account_number"))
         addField(form, "Username", user.optString("username"))
         addField(form, "Role", user.optString("role"))
@@ -1368,6 +1403,7 @@ class MainActivity : AppCompatActivity() {
         val password = secondaryButton("Change password")
         password.setOnClickListener { showChangePassword() }
         form.addView(password)
+        addRecordList(form, "Linked meters", user.optJSONArray("meters"), listOf("meter_number", "meter_label"))
         addBack(form)
         show(form)
     }
@@ -1576,15 +1612,37 @@ class MainActivity : AppCompatActivity() {
             load()
     }
 
-    private fun showBills(status: String = "") {
+    private fun showBills(status: String = "", limit: Int = 100) {
         childScreen()
         showLoading("Loading bills")
-        val path = api.query("bills.php", mapOf("limit" to "100", "status" to status))
+        val path = api.query("bills.php", mapOf("limit" to limit.toString(), "status" to status))
         api.request(path) { result ->
             onResult(result, "Could not load bills") { response ->
                 val data = response.data()
                 val bills = data.optJSONArray("bills") ?: JSONArray()
-                val form = screen("Bills", "${data.optInt("total", bills.length())} bill(s)")
+                val screen = data.optJSONObject("screen") ?: JSONObject()
+                val filters = screen.optJSONArray("filters") ?: JSONArray()
+                val statusOptions = filters.optJSONObject(0)?.optJSONArray("options")?.toFlexibleOptionPairs()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: listOf("" to "All Bills", "pending" to "Pending", "paid" to "Paid", "overdue" to "Overdue", "cancelled" to "Cancelled")
+                val limitOptions = filters.optJSONObject(1)?.optJSONArray("options")?.toFlexibleOptionPairs()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: listOf("10" to "10", "20" to "20", "50" to "50", "100" to "100")
+                val statusField = dropdownInput("Bill status", statusOptions, status)
+                val limitField = dropdownInput("Rows", limitOptions, limit.toString())
+                val form = screen(screen.optString("title").ifBlank { "Bills" }, "${data.optInt("total", bills.length())} bill(s)")
+                form.addView(statusField)
+                form.addView(limitField)
+                form.addView(buttonRow(
+                    "Apply filters" to {
+                        childScreen()
+                        showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit)
+                    },
+                    "Clear" to {
+                        childScreen()
+                        showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100)
+                    }
+                ))
                 if (bills.length() == 0) form.addView(empty("No bills found."))
                 for (index in 0 until bills.length()) {
                     val bill = bills.optJSONObject(index) ?: continue
@@ -1595,6 +1653,11 @@ class MainActivity : AppCompatActivity() {
                     view.isAllCaps = false
                     view.setOnClickListener { showBill(bill.optInt("id")) }
                     form.addView(view)
+                }
+                screen.optJSONObject("primary_action")?.optString("label")?.takeIf(String::isNotBlank)?.let { label ->
+                    val action = secondaryButton(label)
+                    action.setOnClickListener { showDashboard() }
+                    form.addView(action)
                 }
                 addBack(form)
                 show(form)
@@ -2298,18 +2361,49 @@ class MainActivity : AppCompatActivity() {
         show(form)
     }
 
-    private fun showCollections() {
+    private fun showCollections(days: Int = 30, limit: Int = 100) {
         childScreen()
         showLoading("Loading collections")
-        api.request("admin/collections.php?days=30&limit=100") { result ->
+        api.request(api.query("admin/collections.php", mapOf("days" to days.toString(), "limit" to limit.toString()))) { result ->
             onResult(result, "Could not load collections") { response ->
                 val data = response.data()
                 val summary = data.optJSONObject("summary") ?: JSONObject()
+                val periodOptions = data.optJSONArray("period_options")?.toFlexibleOptionPairs()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: listOf("7" to "Last 7 days", "14" to "Last 14 days", "30" to "Last 30 days", "60" to "Last 60 days", "90" to "Last 90 days")
+                val limitOptions = data.optJSONObject("field_metadata")
+                    ?.optJSONObject("limit")
+                    ?.optJSONArray("options")
+                    ?.toFlexibleOptionPairs()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: listOf("10" to "10 records", "20" to "20 records", "50" to "50 records", "100" to "100 records")
+                val periodField = dropdownInput("Period", periodOptions, data.optInt("period_days", days).toString())
+                val limitField = dropdownInput("Rows", limitOptions, limit.toString())
                 val form = screen("Collections", "Last ${data.optInt("period_days", 30)} days")
-                form.addView(card("Completed", money(summary.optDouble("completed_collected"))))
-                form.addView(card("Pending", money(summary.optDouble("pending_collected"))))
-                form.addView(card("Failed", money(summary.optDouble("failed_collected"))))
-                form.addView(card("Customers served", summary.optInt("customers_served").toString()))
+                form.addView(periodField)
+                form.addView(limitField)
+                form.addView(buttonRow(
+                    "Refresh" to {
+                        childScreen()
+                        showCollections(
+                            periodField.tag?.toString()?.toIntOrNull() ?: data.optInt("period_days", days),
+                            limitField.tag?.toString()?.toIntOrNull() ?: limit
+                        )
+                    },
+                    "Last 30 days" to {
+                        childScreen()
+                        showCollections(30, limitField.tag?.toString()?.toIntOrNull() ?: 100)
+                    }
+                ))
+                val summaryCards = summaryCardViews(summary, data.optJSONArray("summary_cards"))
+                if (summaryCards.isNotEmpty()) {
+                    form.addView(summaryCardGrid(summaryCards))
+                } else {
+                    form.addView(card("Completed", money(summary.optDouble("completed_collected"))))
+                    form.addView(card("Pending", money(summary.optDouble("pending_collected"))))
+                    form.addView(card("Failed", money(summary.optDouble("failed_collected"))))
+                    form.addView(card("Customers served", summary.optInt("customers_served").toString()))
+                }
                 addJsonRows(
                     form,
                     "By payment method",
@@ -2591,7 +2685,8 @@ class MainActivity : AppCompatActivity() {
                 for (index in 0 until errors.length()) {
                     val err = errors.optJSONObject(index) ?: continue
                     val id = err.optInt("id")
-                    form.addView(card(err.optString("service", "Error"), "${err.optString("message")}\n${err.optString("created_at")}"))
+                    val errorMessage = err.optString("message").ifBlank { err.optString("error_message") }
+                    form.addView(card(err.optString("service", "Error"), "${errorMessage}\n${err.optString("created_at")}"))
                     val delete = destructiveButton("Delete this log")
                     delete.setOnClickListener {
                         postAction(
@@ -3184,7 +3279,7 @@ class MainActivity : AppCompatActivity() {
                 form.addView(searchBtn)
                 searchBtn.setOnClickListener { childScreen(); loadCustomerManagement(search.text.toString().trim()) }
                 val create = actionButton("New customer")
-                create.setOnClickListener { showCustomerCreateForm(registrationFee) }
+                create.setOnClickListener { showCustomerCreateForm(registrationFee, data) }
                 form.addView(create)
                 val users = data.optJSONArray("users") ?: JSONArray()
                 form.addView(sectionTitle("Customers (${users.length()})"))
@@ -3207,18 +3302,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showCustomerCreateForm(registrationFee: Double) {
+    private fun showCustomerCreateForm(registrationFee: Double, data: JSONObject) {
         backAction = { showCustomerManagement() }
+        val formMetadata = data.optJSONObject("form_metadata") ?: JSONObject()
+        val countryOptions = formMetaOptions(formMetadata, "country_code_options", listOf("254" to "Kenya (+254)"))
+        val connectionOptions = formMetaOptions(
+            formMetadata,
+            "connection_type_options",
+            listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
+        )
         val firstName = input("First name")
         val middleName = input("Middle name (optional)")
         val lastName = input("Last name")
-        val phoneCode = input("Phone country code").apply { setText(R.string.phone_country_code_default) }
+        val phoneCode = dropdownInput("Phone country code", countryOptions, formMetadata.optString("default_country_code").ifBlank { "254" })
         val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE)
         val email = input("Email", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val idNumber = input("ID number")
         val address = input("Address")
         val taxPin = input("Tax PIN (optional)")
-        val connectionType = input("Connection type: domestic, commercial or industrial").apply { setText(R.string.connection_type_domestic) }
+        val connectionType = dropdownInput("Connection type", connectionOptions, "domestic")
         val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val password = input("Temporary password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val alreadyPaid = CheckBox(this).apply {
@@ -3250,13 +3352,13 @@ class MainActivity : AppCompatActivity() {
                 .put("first_name", firstName.text.toString().trim())
                 .put("middle_name", middleName.text.toString().trim())
                 .put("last_name", lastName.text.toString().trim())
-                .put("phone_country_code", phoneCode.text.toString().trim())
+                .put("phone_country_code", phoneCode.tag?.toString().orEmpty())
                 .put("phone_number_local", phoneLocal.text.toString().trim())
                 .put("email", email.text.toString().trim())
                 .put("id_number", idNumber.text.toString().trim())
                 .put("address", address.text.toString().trim())
                 .put("tax_pin", taxPin.text.toString().trim())
-                .put("connection_type", connectionType.text.toString().trim().lowercase())
+                .put("connection_type", connectionType.tag?.toString().orEmpty())
                 .put("unit_rate", unitRate.text.toString().trim())
                 .put("password", password.text.toString())
                 .put("registration_already_paid", alreadyPaid.isChecked)
@@ -3280,25 +3382,33 @@ class MainActivity : AppCompatActivity() {
         api.request(api.query("admin/users.php", mapOf("edit_id" to userId.toString()))) { result ->
             onResult(result, "Could not load customer") { response ->
                 val data = response.data()
+                val formMetadata = data.optJSONObject("form_metadata") ?: JSONObject()
+                val countryOptions = formMetaOptions(formMetadata, "country_code_options", listOf("254" to "Kenya (+254)"))
+                val connectionOptions = formMetaOptions(
+                    formMetadata,
+                    "connection_type_options",
+                    listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
+                )
                 val user = data.optJSONObject("edit_user") ?: JSONObject()
                 val nameParts = user.optString("full_name").trim().split(Regex("\\s+")).filter(String::isNotBlank)
+                val (selectedPhoneCode, localPhone) = splitPhoneNumberForForm(
+                    user.optString("phone_number"),
+                    countryOptions,
+                    formMetadata.optString("default_country_code").ifBlank { "254" }
+                )
                 val firstName = input("First name").apply { setText(nameParts.getOrNull(0) ?: "") }
                 val middleName = input("Middle name (optional)").apply {
                     setText(if (nameParts.size > 2) nameParts.subList(1, nameParts.size - 1).joinToString(" ") else "")
                 }
                 val lastName = input("Last name").apply { setText(if (nameParts.size > 1) nameParts.last() else "") }
-                val phoneCode = input("Phone country code").apply { setText(R.string.phone_country_code_default) }
-                val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE).apply {
-                    setText(user.optString("phone_number").removePrefix("254"))
-                }
+                val phoneCode = dropdownInput("Phone country code", countryOptions, selectedPhoneCode)
+                val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE).apply { setText(localPhone) }
                 val email = input("Email").apply { setText(user.optString("email")) }
                 val idNumber = input("ID number").apply { setText(user.optString("id_number")) }
                 val address = input("Address").apply { setText(user.optString("address")) }
                 val taxPin = input("Tax PIN (optional)").apply { setText(user.optString("tax_pin")) }
                 val meterNumber = input("Primary meter number").apply { setText(user.optString("meter_number")) }
-                val connectionType = input("Connection type").apply {
-                    setText(user.optString("connection_type").takeIf(String::isNotBlank) ?: "domestic")
-                }
+                val connectionType = dropdownInput("Connection type", connectionOptions, user.optString("connection_type").ifBlank { "domestic" })
                 val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply {
                     if (!user.isNull("unit_rate")) setText(user.optString("unit_rate"))
                 }
@@ -3395,14 +3505,14 @@ class MainActivity : AppCompatActivity() {
                         .put("first_name", firstName.text.toString().trim())
                         .put("middle_name", middleName.text.toString().trim())
                         .put("last_name", lastName.text.toString().trim())
-                        .put("phone_country_code", phoneCode.text.toString().trim())
+                        .put("phone_country_code", phoneCode.tag?.toString().orEmpty())
                         .put("phone_number_local", phoneLocal.text.toString().trim())
                         .put("email", email.text.toString().trim())
                         .put("id_number", idNumber.text.toString().trim())
                         .put("address", address.text.toString().trim())
                         .put("tax_pin", taxPin.text.toString().trim())
                         .put("meter_number", meterNumber.text.toString().trim())
-                        .put("connection_type", connectionType.text.toString().trim().lowercase())
+                        .put("connection_type", connectionType.tag?.toString().orEmpty())
                         .put("unit_rate", unitRate.text.toString().trim())
                         .put("location_label", locationLabel.text.toString().trim())
                         .put("latitude", latitude.text.toString().trim())
@@ -3488,7 +3598,7 @@ class MainActivity : AppCompatActivity() {
                 val users = response.data().optJSONArray("users") ?: JSONArray()
                 val form = screen("Staff users", "${users.length()} staff account(s)")
                 val create = actionButton("New staff account")
-                create.setOnClickListener { showStaffEditor(null) }
+                create.setOnClickListener { showStaffEditor(null, response.data()) }
                 form.addView(create)
                 if (users.length() == 0) form.addView(empty("No staff accounts found."))
                 for (index in 0 until users.length()) {
@@ -3499,7 +3609,7 @@ class MainActivity : AppCompatActivity() {
                     )
                     row.isClickable = true
                     row.isFocusable = true
-                    row.setOnClickListener { showStaffEditor(user) }
+                    row.setOnClickListener { showStaffEditor(user, response.data()) }
                     form.addView(row)
                 }
                 addBack(form)
@@ -3508,23 +3618,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showStaffEditor(user: JSONObject?) {
+    private fun showStaffEditor(user: JSONObject?, data: JSONObject? = null) {
         backAction = ::showStaffUsers
         val isNew = user == null
+        val formMetadata = data?.optJSONObject("form_metadata") ?: JSONObject()
+        val countryOptions = formMetaOptions(formMetadata, "country_code_options", listOf("254" to "Kenya (+254)"))
+        val roleOptions = formMetaOptions(
+            formMetadata,
+            "role_options",
+            listOf("admin" to "Admin", "reader" to "Reader", "finance" to "Finance", "support" to "Support")
+        )
+        val statusOptions = formMetaOptions(
+            formMetadata,
+            "status_options",
+            listOf("active" to "Active", "inactive" to "Inactive", "suspended" to "Suspended")
+        )
         val nameParts = user?.optString("full_name")?.trim()?.split(Regex("\\s+"))?.filter(String::isNotBlank) ?: emptyList()
+        val (selectedPhoneCode, localPhone) = splitPhoneNumberForForm(
+            user?.optString("phone_number") ?: "",
+            countryOptions,
+            formMetadata.optString("default_country_code").ifBlank { "254" }
+        )
         val firstName = input("First name").apply { setText(nameParts.getOrNull(0) ?: "") }
         val middleName = input("Middle name (optional)").apply {
             setText(if (nameParts.size > 2) nameParts.subList(1, nameParts.size - 1).joinToString(" ") else "")
         }
         val lastName = input("Last name").apply { setText(if (nameParts.size > 1) nameParts.last() else "") }
         val username = input("Username").apply { setText(user?.optString("username") ?: "") }
-        val phoneCode = input("Phone country code").apply { setText(R.string.phone_country_code_default) }
-        val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE).apply {
-            setText(user?.optString("phone_number")?.removePrefix("254") ?: "")
-        }
+        val phoneCode = dropdownInput("Phone country code", countryOptions, selectedPhoneCode)
+        val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE).apply { setText(localPhone) }
         val idNumber = input("ID number").apply { setText(user?.optString("id_number") ?: "") }
-        val role = input("Role: admin, reader, finance or support").apply { setText(user?.optString("role")?.takeIf(String::isNotBlank) ?: "reader") }
-        val status = input("Status: active, inactive or suspended").apply { setText(user?.optString("status")?.takeIf(String::isNotBlank) ?: "active") }
+        val role = dropdownInput("Role", roleOptions, user?.optString("role")?.takeIf(String::isNotBlank) ?: "reader")
+        val status = dropdownInput("Status", statusOptions, user?.optString("status")?.takeIf(String::isNotBlank) ?: "active")
         val password = input("Password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val confirmPassword = input("Confirm password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val save = actionButton(if (isNew) "Create staff account" else "Save staff account")
@@ -3568,10 +3693,10 @@ class MainActivity : AppCompatActivity() {
                     .put("middle_name", middleName.text.toString().trim())
                     .put("last_name", lastName.text.toString().trim())
                     .put("username", username.text.toString().trim())
-                    .put("phone_country_code", phoneCode.text.toString().trim())
+                    .put("phone_country_code", phoneCode.tag?.toString().orEmpty())
                     .put("phone_number_local", phoneLocal.text.toString().trim())
                     .put("id_number", idNumber.text.toString().trim())
-                    .put("role", role.text.toString().trim().lowercase())
+                    .put("role", role.tag?.toString().orEmpty())
                     .put("password", password.text.toString())
                     .put("confirm_password", confirmPassword.text.toString())
                 setLoading(save, true, "Create staff account")
@@ -3589,11 +3714,11 @@ class MainActivity : AppCompatActivity() {
                     .put("user_id", user.optInt("id"))
                     .put("full_name", fullName)
                     .put("username", username.text.toString().trim())
-                    .put("phone_country_code", phoneCode.text.toString().trim())
+                    .put("phone_country_code", phoneCode.tag?.toString().orEmpty())
                     .put("phone_number_local", phoneLocal.text.toString().trim())
                     .put("id_number", idNumber.text.toString().trim())
-                    .put("role", role.text.toString().trim().lowercase())
-                    .put("status", status.text.toString().trim().lowercase())
+                    .put("role", role.tag?.toString().orEmpty())
+                    .put("status", status.tag?.toString().orEmpty())
                 setLoading(save, true, "Save staff account")
                 api.request("admin/staff_users.php", "POST", body) { r ->
                     runOnUiThread {
@@ -3854,6 +3979,7 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load terms and conditions") { response ->
                 val data = response.data()
                 val termsText = data.optString("terms_conditions_content")
+                val termsTemplate = data.optString("terms_conditions_template").ifBlank { termsText }
                 val form = screen("Terms & Conditions", "Customer terms and conditions")
                 val sections = data.optJSONArray("rendered_terms_sections")
                 if (sections != null && sections.length() > 0) {
@@ -3888,7 +4014,7 @@ class MainActivity : AppCompatActivity() {
                 addBack(form)
                 edit.setOnClickListener {
                     val content = multilineInput("Write terms and conditions").apply {
-                        setText(termsText)
+                        setText(termsTemplate)
                         minLines = 8
                     }
                     val password = input(
@@ -3919,7 +4045,7 @@ class MainActivity : AppCompatActivity() {
                                 api.request(
                                     "admin/terms_conditions.php", "POST",
                                     JSONObject().put("current_password", password.text.toString())
-                                        .put("terms_conditions_content", content.text.toString())
+                                        .put("terms_conditions_template", content.text.toString())
                                 ) { saveResult ->
                                     runOnUiThread {
                                         saveButton.isEnabled = true
@@ -3958,8 +4084,13 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load payments workspace") { response ->
                 val data = response.data()
                 val currentUser = data.optJSONObject("current_user")
+                val searchHint = data.optJSONObject("field_metadata")
+                    ?.optJSONObject("account_number")
+                    ?.optString("placeholder")
+                    .takeIf(String::isNotBlank)
+                    ?: "Account, meter number or name"
                 val form = screen("Payments workspace", "Search a customer to record payments and adjustments")
-                val (searchBox, search) = searchableIdentifierField("Account, meter number or name", account) { item ->
+                val (searchBox, search) = searchableIdentifierField(searchHint, account) { item ->
                     val value = item.optString("selection_value").ifBlank { item.optString("account_number") }
                     childScreen(); loadPaymentsWorkspace(value)
                 }
@@ -3978,12 +4109,12 @@ class MainActivity : AppCompatActivity() {
                         val billId = bill.optInt("id")
                         form.addView(card("${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due", bill.optString("status")))
                         form.addView(buttonRow(
-                            "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice") },
+                            "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
                             "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
                         ))
                     }
                     val recordBalance = secondaryButton("Record payment to account balance")
-                    recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance") }
+                    recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
                     form.addView(recordBalance)
                     val payments = data.optJSONArray("payments") ?: JSONArray()
                     form.addView(sectionTitle("Completed payments"))
@@ -4004,29 +4135,43 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showManualPaymentForm(accountNumber: String, billId: Int, target: String) {
+    private fun showManualPaymentForm(accountNumber: String, billId: Int, target: String, paymentWorkspaceData: JSONObject) {
         backAction = { showPaymentsWorkspace() }
-        val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val method = dropdownInput(
-            "Payment method",
+        val targetOptions = fieldOptions(
+            paymentWorkspaceData,
+            "payment_target",
+            "payment_target_options",
+            listOf("invoice" to "Invoice", "balance" to "Outstanding Balance")
+        )
+        val methodOptions = fieldOptions(
+            paymentWorkspaceData,
+            "payment_method",
+            "payment_method_options",
             listOf(
                 "mpesa" to "M-Pesa",
                 "cash" to "Cash",
-                "bank" to "Bank",
+                "bank" to "Bank Transfer",
                 "card" to "Card",
                 "cheque" to "Cheque",
+                "wallet" to "Wallet",
                 "other" to "Other"
-            ),
-            "cash"
+            )
         )
+        val targetField = dropdownInput(
+            "Payment target",
+            targetOptions,
+            fieldDefaultValue(paymentWorkspaceData, "payment_target", target)
+        )
+        val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val method = dropdownInput("Payment method", methodOptions, fieldDefaultValue(paymentWorkspaceData, "payment_method", "cash"))
         val reference = input("Payment reference")
-        val paidDate = datePickerInput("Paid date", today())
+        val paidDate = datePickerInput("Paid date", fieldDefaultValue(paymentWorkspaceData, "paid_date", today()))
         val paidTime = input("Paid time HH:MM (optional)")
         val phone = input("Phone number (optional)", InputType.TYPE_CLASS_PHONE)
         val note = multilineInput("Note (optional)")
         val save = actionButton("Record payment")
         val form = screen("Record payment", "$accountNumber • target: $target")
-        listOf(amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
+        listOf(targetField, amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
         addBack(form)
         save.setOnClickListener {
             if (amount.text.isBlank() || paidDate.text.isBlank()) {
@@ -4037,7 +4182,7 @@ class MainActivity : AppCompatActivity() {
                 .put("action", "manual_payment")
                 .put("account_number", accountNumber)
                 .put("bill_id", billId)
-                .put("payment_target", target)
+                .put("payment_target", targetField.tag as String)
                 .put("payment_method", method.tag as String)
                 .put("payment_reference", reference.text.toString().trim())
                 .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
@@ -4160,7 +4305,7 @@ class MainActivity : AppCompatActivity() {
                 val fee = data.optDouble("registration_fee")
                 val form = screen("Registration proformas", "Registration fee: ${money(fee)}")
                 val create = actionButton("New registration proforma")
-                create.setOnClickListener { showCreateProforma(fee) }
+                create.setOnClickListener { showCreateProforma(fee, data) }
                 form.addView(create)
                 val proformas = data.optJSONArray("proformas") ?: JSONArray()
                 form.addView(sectionTitle("Proformas (${proformas.length()})"))
@@ -4187,21 +4332,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showCreateProforma(fee: Double) {
+    private fun showCreateProforma(fee: Double, data: JSONObject) {
         backAction = ::showRegistrationProformas
-        val customerType = input("Customer type: individual or company").apply { setText(R.string.customer_type_individual) }
+        val formMetadata = data.optJSONObject("form_metadata") ?: JSONObject()
+        val customerTypeOptions = formMetaOptions(
+            formMetadata,
+            "customer_type_options",
+            listOf("individual" to "Individual", "company" to "Company")
+        )
+        val countryOptions = formMetaOptions(formMetadata, "country_code_options", listOf("254" to "Kenya (+254)"))
+        val connectionOptions = formMetaOptions(
+            formMetadata,
+            "connection_type_options",
+            listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
+        )
+        val customerType = dropdownInput("Customer type", customerTypeOptions, "individual")
         val firstName = input("First name / contact first name")
         val middleName = input("Middle name (optional)")
         val lastName = input("Last name / contact last name")
         val companyName = input("Company name (company only)")
         val companyReg = input("Company registration number (company only)")
-        val phoneCode = input("Phone country code").apply { setText(R.string.phone_country_code_default) }
+        val phoneCode = dropdownInput("Phone country code", countryOptions, formMetadata.optString("default_country_code").ifBlank { "254" })
         val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE)
         val email = input("Email", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val idNumber = input("ID number (individual)")
         val address = input("Address")
         val taxPin = input("Tax PIN (optional)")
-        val connectionType = input("Connection type: domestic, commercial or industrial").apply { setText(R.string.connection_type_domestic) }
+        val connectionType = dropdownInput("Connection type", connectionOptions, "domestic")
         val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val notes = multilineInput("Notes (optional)")
         val create = actionButton("Create proforma")
@@ -4214,19 +4371,19 @@ class MainActivity : AppCompatActivity() {
         create.setOnClickListener {
             val body = JSONObject()
                 .put("form_type", "create_proforma")
-                .put("customer_type", customerType.text.toString().trim().lowercase())
+                .put("customer_type", customerType.tag?.toString().orEmpty())
                 .put("first_name", firstName.text.toString().trim())
                 .put("middle_name", middleName.text.toString().trim())
                 .put("last_name", lastName.text.toString().trim())
                 .put("company_name", companyName.text.toString().trim())
                 .put("company_registration_number", companyReg.text.toString().trim())
-                .put("phone_country_code", phoneCode.text.toString().trim())
+                .put("phone_country_code", phoneCode.tag?.toString().orEmpty())
                 .put("phone_number_local", phoneLocal.text.toString().trim())
                 .put("email", email.text.toString().trim())
                 .put("id_number", idNumber.text.toString().trim())
                 .put("address", address.text.toString().trim())
                 .put("tax_pin", taxPin.text.toString().trim())
-                .put("connection_type", connectionType.text.toString().trim().lowercase())
+                .put("connection_type", connectionType.tag?.toString().orEmpty())
                 .put("unit_rate", unitRate.text.toString().trim())
                 .put("notes", notes.text.toString().trim())
             setLoading(create, true, "Create proforma")
@@ -4250,10 +4407,22 @@ class MainActivity : AppCompatActivity() {
         api.request("admin/invoicing.php") { result ->
             onResult(result, "Could not load invoicing") { response ->
                 val data = response.data()
-                val (identifierBox, identifier) = searchableIdentifierField("Account, meter number or name")
+                val metadata = data.optJSONObject("field_metadata") ?: JSONObject()
+                val identifierHint = metadata.optJSONObject("account_or_meter")?.optString("placeholder")
+                    ?.takeIf(String::isNotBlank)
+                    ?: "Account, meter number or name"
+                val (identifierBox, identifier) = searchableIdentifierField(identifierHint)
                 val reading = input("Current reading", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-                val billingMonth = datePickerInput("Billing month", data.optString("default_billing_month"))
-                val dueDate = datePickerInput("Due date", data.optString("default_due_date"))
+                val billingMonth = datePickerInput(
+                    "Billing month",
+                    fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")),
+                    metadata.optJSONObject("billing_month")?.optString("picker_mode").ifBlank { "date" }
+                )
+                val dueDate = datePickerInput(
+                    "Due date",
+                    fieldDefaultValue(data, "due_date", data.optString("default_due_date")),
+                    metadata.optJSONObject("due_date")?.optString("picker_mode").ifBlank { "date" }
+                )
                 val submit = actionButton("Create bill from reading")
                 val form = screen("Invoicing", "Create a pending bill from a meter reading")
                 form.addView(identifierBox)
@@ -4963,7 +5132,127 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun datePickerInput(hintText: String, initialValue: String): EditText {
+    private fun fieldOptions(
+        data: JSONObject,
+        fieldKey: String,
+        topLevelKey: String? = null,
+        fallback: List<Pair<String, String>> = emptyList()
+    ): List<Pair<String, String>> {
+        val metadataOptions = data.optJSONObject("field_metadata")
+            ?.optJSONObject(fieldKey)
+            ?.optJSONArray("options")
+            ?.toFlexibleOptionPairs()
+            .orEmpty()
+        if (metadataOptions.isNotEmpty()) return metadataOptions
+        val topLevelOptions = topLevelKey?.let { key ->
+            data.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
+        }.orEmpty()
+        return if (topLevelOptions.isNotEmpty()) topLevelOptions else fallback
+    }
+
+    private fun formMetaOptions(
+        formMetadata: JSONObject,
+        key: String,
+        fallback: List<Pair<String, String>> = emptyList()
+    ): List<Pair<String, String>> {
+        val options = formMetadata.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
+        return if (options.isNotEmpty()) options else fallback
+    }
+
+    private fun splitPhoneNumberForForm(
+        phoneNumber: String,
+        countryOptions: List<Pair<String, String>>,
+        defaultCountryCode: String
+    ): Pair<String, String> {
+        val digits = phoneNumber.filter(Char::isDigit)
+        if (digits.isBlank()) return defaultCountryCode to ""
+        val selectedCode = countryOptions
+            .map { it.first.filter(Char::isDigit) }
+            .filter(String::isNotBlank)
+            .sortedByDescending { it.length }
+            .firstOrNull { digits.startsWith(it) }
+            ?: defaultCountryCode
+        val localNumber = digits.removePrefix(selectedCode).ifBlank { digits }
+        return selectedCode to localNumber
+    }
+
+    private fun fieldDefaultValue(data: JSONObject, fieldKey: String, fallback: String): String {
+        val defaultValue = data.optJSONObject("field_metadata")
+            ?.optJSONObject(fieldKey)
+            ?.opt("default_value")
+            ?.toString()
+            .orEmpty()
+        return defaultValue.ifBlank { fallback }
+    }
+
+    private fun toneForEmphasis(emphasis: String): Tone = when (emphasis.lowercase()) {
+        "positive", "success" -> toneTeal
+        "warning" -> toneAmber
+        "danger", "error" -> toneRed
+        else -> toneBlue
+    }
+
+    private fun iconForSummaryKey(key: String): Int {
+        val normalized = key.lowercase()
+        return when {
+            listOf("amount", "balance", "collected", "payment").any(normalized::contains) -> R.drawable.ic_wallet
+            listOf("bill", "invoice", "statement").any(normalized::contains) -> R.drawable.ic_receipt
+            listOf("meter", "reading").any(normalized::contains) -> R.drawable.ic_meter
+            listOf("overdue", "alert", "warning").any(normalized::contains) -> R.drawable.ic_warning_triangle
+            else -> R.drawable.ic_circle_check
+        }
+    }
+
+    private fun summaryCardViews(summary: JSONObject, specs: JSONArray?): List<View> {
+        val cards = mutableListOf<View>()
+        if (specs == null || specs.length() == 0) return cards
+        for (index in 0 until specs.length()) {
+            val spec = specs.optJSONObject(index) ?: continue
+            val key = spec.optString("key")
+            val label = spec.optString("label").ifBlank {
+                key.replace('_', ' ').replaceFirstChar(Char::uppercase)
+            }
+            val rawValue = when {
+                key.isNotBlank() && summary.has(key) -> summary.opt(key)
+                spec.has("value") -> spec.opt("value")
+                else -> null
+            }
+            if (rawValue == null || rawValue == JSONObject.NULL) continue
+            cards += summaryCard(
+                label,
+                formatValue(key.ifBlank { label }, rawValue),
+                iconForSummaryKey(key.ifBlank { label }),
+                toneForEmphasis(spec.optString("emphasis"))
+            )
+        }
+        return cards
+    }
+
+    private fun addScreenAlert(parent: LinearLayout, alert: JSONObject) {
+        val title = alert.optString("title").ifBlank { "Notice" }
+        val message = alert.optString("message")
+        val tone = when (alert.optString("type").lowercase()) {
+            "warning" -> toneAmber
+            "danger", "error" -> toneRed
+            "success", "positive" -> toneTeal
+            else -> toneBlue
+        }
+        parent.addView(statusBanner(title, message, tone, R.drawable.ic_circle_alert, false))
+        val action = alert.optJSONObject("action") ?: return
+        val label = action.optString("label")
+        if (label.isBlank()) return
+        val button = secondaryButton(label)
+        button.setOnClickListener {
+            when (action.optString("target")) {
+                "/api/mobile/registration_payment.php" -> loadRegistrationPayment()
+                "/api/mobile/change_password.php" -> showChangePassword()
+                "/api/mobile/theme.php" -> showProfile()
+            }
+        }
+        parent.addView(button)
+    }
+
+    private fun datePickerInput(hintText: String, initialValue: String, pickerMode: String = "date"): EditText {
         val field = input(hintText).apply {
             keyListener = null
             isFocusable = false
@@ -4979,7 +5268,13 @@ class MainActivity : AppCompatActivity() {
             DatePickerDialog(
                 this,
                 { _, year, month, day ->
-                    field.setText(String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day))
+                    field.setText(
+                        if (pickerMode.equals("month", ignoreCase = true)) {
+                            String.format(Locale.US, "%04d-%02d-01", year, month + 1)
+                        } else {
+                            String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day)
+                        }
+                    )
                 },
                 calendar.get(Calendar.YEAR),
                 calendar.get(Calendar.MONTH),
