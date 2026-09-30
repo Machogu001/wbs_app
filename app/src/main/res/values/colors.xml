@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Core utility/finance palette -->
+    <color name="brand_navy">#0F2A4D</color>
+    <color name="brand_navy_dark">#081A33</color>
+    <color name="brand_blue">#1B5FC4</color>
+    <color name="brand_blue_dark">#124485</color>
+    <color name="brand_teal">#0E8C7F</color>
+    <color name="brand_teal_dark">#0A6459</color>
+    <color name="brand_amber">#B9770E</color>
+    <color name="brand_amber_dark">#8A5A0A</color>
+    <color name="brand_red">#B3261E</color>
+    <color name="brand_red_dark">#7D1D17</color>
+
+    <!-- Theme aliases -->
+    <color name="brand_primary_light">#4C8CDD</color>
+    <color name="brand_primary">#1B5FC4</color>
+    <color name="brand_primary_dark">#0F2A4D</color>
+    <color name="brand_accent">#0E8C7F</color>
+    <color name="brand_accent_dark">#0A6459</color>
+
+    <!-- Surfaces -->
+    <color name="page_background">#EEF1F6</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="surface_card_muted">#F9FAFC</color>
+    <color name="surface_tint_blue">#E7EFFC</color>
+    <color name="surface_tint_teal">#E3F4F0</color>
+    <color name="surface_tint_amber">#FBF0DE</color>
+    <color name="surface_tint_red">#FBE9E8</color>
+    <color name="surface_tint_navy">#E7ECF4</color>
+
+    <!-- Text and lines -->
+    <color name="body_text">#152238</color>
+    <color name="muted_text">#5B6B82</color>
+    <color name="border">#D8E0EC</color>
+    <color name="progress_track">#DCE6F2</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
