@@ -23,13 +23,8 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import android.graphics.pdf.PdfRenderer
 import android.text.Html
-import android.text.SpannableString
-import android.text.Spanned
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
-import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -1243,7 +1238,7 @@ class MainActivity : AppCompatActivity() {
         "Billing & payments",
         "Manage billing, collections and payment workflows.",
         listOf(
-            "Collections" to ::showCollections,
+            "Collections" to { showCollections() },
             "Record payment" to ::showManualPayment,
             "Payments workspace" to ::showPaymentsWorkspace,
             "Payment transactions" to ::showPaymentTransactions,
@@ -2650,7 +2645,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (mode == "staff") {
                     form.addView(buttonRow(
-                        if (currentAvailable) "Set offline" else "Set online" to {
+                        (if (currentAvailable) "Set offline" else "Set online") to {
                             api.request(
                                 "support_chat.php",
                                 "POST",
@@ -2818,7 +2813,7 @@ class MainActivity : AppCompatActivity() {
                     summaryCard("Availability", if (currentAvailable) "Online" else "Offline", R.drawable.ic_circle_alert, if (currentAvailable) toneTeal else toneAmber)
                 )))
                 form.addView(buttonRow(
-                    if (currentAvailable) "Set offline" else "Set online" to {
+                    (if (currentAvailable) "Set offline" else "Set online") to {
                         api.request(
                             "admin/messaging.php",
                             "POST",
@@ -3584,7 +3579,7 @@ class MainActivity : AppCompatActivity() {
                 ))
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
                 form.addView(sectionTitle("Find account activity"))
-                val typeChoices = accountTypeOptions(includeAll = true)
+                val typeChoices = accountTypeOptions()
                 val typePicker = dropdownInput("Account type", typeChoices, accountType)
                 form.addView(typePicker)
                 form.addView(secondaryButton("Apply type filter").apply {
@@ -3662,7 +3657,7 @@ class MainActivity : AppCompatActivity() {
                         summaryCard("Date", selectedEntry.optString("entry_date"), R.drawable.ic_circle_clock, toneBlue),
                         summaryCard(
                             "Reference",
-                            listOf(
+                            listOfNotNull(
                                 selectedEntry.optString("reference_type"),
                                 selectedEntry.opt("reference_id")?.toString().orEmpty().takeIf(String::isNotBlank)
                             ).filter(String::isNotBlank).joinToString(" #").ifBlank { "Manual" },
@@ -4679,7 +4674,7 @@ class MainActivity : AppCompatActivity() {
                 val searchHint = data.optJSONObject("field_metadata")
                     ?.optJSONObject("account_number")
                     ?.optString("placeholder")
-                    .takeIf(String::isNotBlank)
+                    ?.takeIf(String::isNotBlank)
                     ?: "Account, meter number or name"
                 val form = screen("Payments workspace", "Search a customer to record payments and adjustments")
                 val (searchBox, search) = searchableIdentifierField(searchHint, account) { item ->
@@ -5008,12 +5003,12 @@ class MainActivity : AppCompatActivity() {
                 val billingMonth = datePickerInput(
                     "Billing month",
                     fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")),
-                    metadata.optJSONObject("billing_month")?.optString("picker_mode").ifBlank { "date" }
+                    metadata.optJSONObject("billing_month")?.optString("picker_mode").orEmpty().ifBlank { "date" }
                 )
                 val dueDate = datePickerInput(
                     "Due date",
                     fieldDefaultValue(data, "due_date", data.optString("default_due_date")),
-                    metadata.optJSONObject("due_date")?.optString("picker_mode").ifBlank { "date" }
+                    metadata.optJSONObject("due_date")?.optString("picker_mode").orEmpty().ifBlank { "date" }
                 )
                 val submit = actionButton("Create bill from reading")
                 val form = screen("Invoicing", "Create a pending bill from a meter reading")
@@ -5671,12 +5666,12 @@ class MainActivity : AppCompatActivity() {
             val type = formatAccountType(account.optString("account_type"))
             val title = listOf(code, name).filter(String::isNotBlank).joinToString(" • ")
             val status = if (account.optBoolean("is_active", true)) "Active" else "Inactive"
-            (id.toString()) to listOf(title, type, status.takeIf { includeInactive }).filterNotNull().filter(String::isNotBlank).joinToString(" — ")
+            (id.toString()) to listOfNotNull(title, type, status.takeIf { includeInactive }).filter(String::isNotBlank).joinToString(" — ")
         }
 
-    private fun accountTypeOptions(includeAll: Boolean = false): List<Pair<String, String>> {
+    private fun accountTypeOptions(): List<Pair<String, String>> {
         val options = mutableListOf<Pair<String, String>>()
-        if (includeAll) options += "" to "All account types"
+        options += "" to "All account types"
         options += listOf(
             "asset" to "Asset",
             "liability" to "Liability",
@@ -5776,7 +5771,7 @@ class MainActivity : AppCompatActivity() {
         val topLevelOptions = topLevelKey?.let { key ->
             data.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
         }.orEmpty()
-        return if (topLevelOptions.isNotEmpty()) topLevelOptions else fallback
+        return topLevelOptions.ifEmpty { fallback }
     }
 
     private fun formMetaOptions(
@@ -5785,7 +5780,7 @@ class MainActivity : AppCompatActivity() {
         fallback: List<Pair<String, String>> = emptyList()
     ): List<Pair<String, String>> {
         val options = formMetadata.optJSONArray(key)?.toFlexibleOptionPairs().orEmpty()
-        return if (options.isNotEmpty()) options else fallback
+        return options.ifEmpty { fallback }
     }
 
     private fun splitPhoneNumberForForm(
@@ -6181,46 +6176,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun addField(parent: LinearLayout, label: String, value: String) {
         parent.addView(card(label, value.ifBlank { "—" }))
-    }
-
-    private fun addMenu(parent: LinearLayout, label: String, action: () -> Unit, description: String = "") {
-        parent.addView(navRow(label, description, action))
-    }
-
-    private fun navRow(title: String, description: String, action: () -> Unit) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        isClickable = true
-        isFocusable = true
-        minimumHeight = dp(50)
-        background = roundedDrawable(cardBackground, border, 16f)
-        setPadding(dp(16), dp(14), dp(14), dp(14))
-        elevation = dp(2).toFloat()
-        contentDescription = if (description.isNotBlank()) "$title. $description" else title
-        setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(9) }
-        addView(LinearLayout(this@MainActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            addView(TextView(this@MainActivity).apply {
-                text = title
-                textSize = 15.5f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(textPrimary)
-            })
-            if (description.isNotBlank()) {
-                addView(body(description).apply {
-                    textSize = 12.5f
-                    setPadding(0, dp(2), 0, 0)
-                })
-            }
-        })
-        addView(iconView(R.drawable.ic_chevron_right, muted, 20).apply {
-            (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8)
-        })
     }
 
     private fun addWorkspace(
@@ -6621,9 +6576,11 @@ class MainActivity : AppCompatActivity() {
             val title = titleFields.map { row.optString(it) }.firstOrNull(String::isNotBlank)
                 ?: (heading.removeSuffix("s") + " #" + (index + 1))
             val excluded = titleFields.toSet()
+            val urlKeys = row.keys().asSequence().filter { isLinkField(it, row.opt(it)) }.sorted().toList()
             val scalarKeys = row.keys().asSequence()
                 .filter { key ->
-                    key !in excluded && key != "id" && row.opt(key) !is JSONObject && row.opt(key) !is JSONArray
+                    key !in excluded && key != "id" && key !in urlKeys &&
+                        row.opt(key) !is JSONObject && row.opt(key) !is JSONArray
                 }
                 .sorted()
                 .take(6)
@@ -6642,6 +6599,7 @@ class MainActivity : AppCompatActivity() {
                 view.setOnClickListener { onClick(row) }
             }
             parent.addView(view)
+            urlKeys.forEach { key -> parent.addView(linkButton(key, row.optString(key), title)) }
             nestedKeys.forEach { key ->
                 renderNode(
                     parent,
@@ -6687,17 +6645,55 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun isLinkField(key: String, value: Any?): Boolean {
+        if (!key.endsWith("_url")) return false
+        val text = (value as? String)?.trim().orEmpty()
+        return text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true)
+    }
+
+    private fun linkButton(key: String, url: String, context: String): View {
+        val name = key.removeSuffix("_url").removePrefix("public_").replace('_', ' ')
+            .replace("pdf", "PDF").trim().ifBlank { "document" }
+        val inApp = listOf("document", "receipt", "invoice", "pdf", "statement", "photo", "image")
+            .any { key.contains(it, ignoreCase = true) }
+        return secondaryButton("Open $name").apply {
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Open ${name.replaceFirstChar(Char::uppercase)}?")
+                    .setMessage(
+                        if (inApp) "Do you want to open this $name for $context?"
+                        else "Do you want to open this $name for $context in your browser?"
+                    )
+                    .setPositiveButton("Open") { _, _ ->
+                        if (inApp) {
+                            showDocumentViewer(url, name.replaceFirstChar(Char::uppercase))
+                        } else {
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                            } catch (_: Exception) {
+                                toast("No app can open this link.")
+                            }
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+    }
+
     private fun renderNode(parent: LinearLayout, label: String, value: Any?) {
         when (value) {
             is JSONObject -> {
                 if (value.length() == 0) return
                 val scalarCards = mutableListOf<View>()
+                val linkButtons = mutableListOf<View>()
                 val nestedItems = mutableListOf<Pair<String, Any?>>()
                 value.keys().asSequence().sorted().forEach { key ->
                     val child = value.opt(key)
                     val childLabel = key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }
-                    when (child) {
-                        is JSONObject, is JSONArray -> nestedItems += childLabel to child
+                    when {
+                        isLinkField(key, child) -> linkButtons += linkButton(key, child.toString(), label)
+                        child is JSONObject || child is JSONArray -> nestedItems += childLabel to child
                         else -> if (child != null && child != JSONObject.NULL) {
                             scalarCards += summaryCard(
                                 childLabel,
@@ -6708,9 +6704,10 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-                if (scalarCards.isNotEmpty()) {
+                if (scalarCards.isNotEmpty() || linkButtons.isNotEmpty()) {
                     parent.addView(sectionTitle(label))
-                    parent.addView(summaryCardGrid(scalarCards))
+                    if (scalarCards.isNotEmpty()) parent.addView(summaryCardGrid(scalarCards))
+                    linkButtons.forEach(parent::addView)
                 }
                 nestedItems.forEach { (childLabel, child) -> renderNode(parent, childLabel, child) }
             }
