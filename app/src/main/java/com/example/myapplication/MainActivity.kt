@@ -787,7 +787,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 html.isNotBlank() -> {
                     addView(TextView(this@MainActivity).apply {
-                        text = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT)
+                        this.text = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT)
                         textSize = 16f
                         setTextColor(textPrimary)
                         setPadding(dp(16), dp(16), dp(16), dp(16))
@@ -1290,20 +1290,20 @@ class MainActivity : AppCompatActivity() {
         ) {
             addView(summaryCardGrid(accountSummaryCards))
         })
-        form.addView(sectionTitle(latestBillsSection?.optString("title").ifBlank { "Latest bills" }))
+        form.addView(sectionTitle(latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" }))
         addRecordList(
             parent = form,
-            heading = latestBillsSection?.optString("title").ifBlank { "Latest bills" },
+            heading = latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" },
             rows = data.optJSONArray("latest_bills"),
             titleFields = listOf("type_label", "billing_month"),
             onClick = { row -> showBill(row.optInt("id")) },
-            emptyState = latestBillsSection?.optString("empty_state").ifBlank { "No bills available yet." },
+            emptyState = latestBillsSection?.optString("empty_state").orEmpty().ifBlank { "No bills available yet." },
             showHeading = false
         )
         val latestPayment = data.optJSONObject("latest_payment")
-        form.addView(sectionTitle(latestPaymentSection?.optString("title").ifBlank { "Latest payment" }))
+        form.addView(sectionTitle(latestPaymentSection?.optString("title").orEmpty().ifBlank { "Latest payment" }))
         if (latestPayment == null) {
-            form.addView(empty(latestPaymentSection?.optString("empty_state").ifBlank { "No payment has been recorded yet." }))
+            form.addView(empty(latestPaymentSection?.optString("empty_state").orEmpty().ifBlank { "No payment has been recorded yet." }))
         } else {
             val paymentCard = card(
                 money(latestPayment.optDouble("amount")),
@@ -1323,18 +1323,18 @@ class MainActivity : AppCompatActivity() {
             form.addView(paymentCard)
         }
         form.addView(sectionPanel(
-            title = metersSection?.optString("title").ifBlank { "Meters and service points" },
+            title = metersSection?.optString("title").orEmpty().ifBlank { "Meters and service points" },
             description = "Track active meters and move quickly into readings or support workflows."
         ) {
             addRecordList(
                 parent = this,
-                heading = metersSection?.optString("title").ifBlank { "Meters" },
+                heading = metersSection?.optString("title").orEmpty().ifBlank { "Meters" },
                 rows = data.optJSONArray("meters"),
                 titleFields = listOf("meter_number", "meter_label"),
-                emptyState = metersSection?.optString("empty_state").ifBlank { "No active meters found." },
+                emptyState = metersSection?.optString("empty_state").orEmpty().ifBlank { "No active meters found." },
                 showHeading = false
             )
-        }
+        })
         form.addView(sectionPanel(
             title = "Quick actions",
             description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
@@ -1633,7 +1633,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
         form.addView(sectionPanel(
-            title = userSection?.optString("title").ifBlank { "Account details" },
+            title = userSection?.optString("title").orEmpty().ifBlank { "Account details" },
             description = "Core identity and service information returned by the profile endpoint."
         ) {
             if (userSection != null && userSection.optJSONArray("fields")?.length() ?: 0 > 0) {
@@ -1660,15 +1660,15 @@ class MainActivity : AppCompatActivity() {
             ) { selected -> updateThemePreference(selected, user) })
         })
         form.addView(sectionPanel(
-            title = metersSection?.optString("title").ifBlank { "Linked meters" },
+            title = metersSection?.optString("title").orEmpty().ifBlank { "Linked meters" },
             description = "Meters associated with this account and available for readings or service checks."
         ) {
             addRecordList(
                 parent = this,
-                heading = metersSection?.optString("title").ifBlank { "Linked meters" },
+                heading = metersSection?.optString("title").orEmpty().ifBlank { "Linked meters" },
                 rows = linkedMeters,
                 titleFields = listOf("meter_number", "meter_label"),
-                emptyState = metersSection?.optString("empty_state").ifBlank { "No linked meters found." },
+                emptyState = metersSection?.optString("empty_state").orEmpty().ifBlank { "No linked meters found." },
                 showHeading = false
             )
         })
@@ -1946,8 +1946,8 @@ class MainActivity : AppCompatActivity() {
                 val limitOptions = limitFilter?.optJSONArray("options")?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("10" to "10", "20" to "20", "50" to "50", "100" to "100")
-                val statusField = dropdownInput(statusFilter?.optString("label").ifBlank { "Bill status" }, statusOptions, status)
-                val limitField = dropdownInput(limitFilter?.optString("label").ifBlank { "Rows" }, limitOptions, limit.toString())
+                val statusField = dropdownInput(statusFilter?.optString("label").orEmpty().ifBlank { "Bill status" }, statusOptions, status)
+                val limitField = dropdownInput(limitFilter?.optString("label").orEmpty().ifBlank { "Rows" }, limitOptions, limit.toString())
                 val pagination = screen.optJSONObject("pagination") ?: JSONObject()
                 val totalBills = pagination.optInt("total", data.optInt("total", bills.length()))
                 val form = screen(screen.optString("title").ifBlank { "Bills" }, "$totalBills bill(s)")
@@ -1987,8 +1987,8 @@ class MainActivity : AppCompatActivity() {
                         }
                     ))
                 })
-                form.addView(sectionTitle(billSection?.optString("title").ifBlank { "Bills in view" }))
-                if (bills.length() == 0) form.addView(empty(billSection?.optString("empty_state").ifBlank { "No bills found." }))
+                form.addView(sectionTitle(billSection?.optString("title").orEmpty().ifBlank { "Bills in view" }))
+                if (bills.length() == 0) form.addView(empty(billSection?.optString("empty_state").orEmpty().ifBlank { "No bills found." }))
                 val itemActions = billSection?.optJSONArray("item_actions") ?: JSONArray()
                 for (index in 0 until bills.length()) {
                     val bill = bills.optJSONObject(index) ?: continue
@@ -3030,8 +3030,8 @@ class MainActivity : AppCompatActivity() {
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("10" to "10 records", "20" to "20 records", "50" to "50 records", "100" to "100 records")
                 val paymentMethodLabels = data.optJSONArray("payment_method_options")?.toFlexibleOptionPairs()?.toMap().orEmpty()
-                val periodField = dropdownInput(fieldMetadata.optJSONObject("days")?.optString("label").ifBlank { "Period" }, periodOptions, data.optInt("period_days", days).toString())
-                val limitField = dropdownInput(fieldMetadata.optJSONObject("limit")?.optString("label").ifBlank { "Rows" }, limitOptions, limit.toString())
+                val periodField = dropdownInput(fieldMetadata.optJSONObject("days")?.optString("label").orEmpty().ifBlank { "Period" }, periodOptions, data.optInt("period_days", days).toString())
+                val limitField = dropdownInput(fieldMetadata.optJSONObject("limit")?.optString("label").orEmpty().ifBlank { "Rows" }, limitOptions, limit.toString())
                 val form = screen("Collections", "Last ${data.optInt("period_days", 30)} days")
                 form.addView(sectionPanel(
                     title = "Collections filters",
@@ -5376,7 +5376,7 @@ class MainActivity : AppCompatActivity() {
                                         val key = iterator.next()
                                         val sample = sampleTemplates.optJSONObject(key) ?: continue
                                         sampleKeys += key
-                                        sampleLabels += listOf(
+                                        sampleLabels += listOfNotNull(
                                             sample.optString("label").ifBlank { key.replace('_', ' ') },
                                             sample.optString("description").takeIf(String::isNotBlank)
                                         ).filter(String::isNotBlank).joinToString(" • ")
@@ -7603,9 +7603,9 @@ class MainActivity : AppCompatActivity() {
             "full_name", "title", "name", "subject", "entry_no", "reference_no",
             "account_number", "code", "period_key", "meter_number", "phone", "email", "memo"
         ),
-        onClick: ((JSONObject) -> Unit)? = null,
         emptyState: String = "No records found.",
-        showHeading: Boolean = true
+        showHeading: Boolean = true,
+        onClick: ((JSONObject) -> Unit)? = null
     ) {
         if (showHeading) {
             parent.addView(sectionTitle(heading))
