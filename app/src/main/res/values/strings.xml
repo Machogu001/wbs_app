@@ -31,4 +31,5 @@
     <string name="password_hidden">Password hidden</string>
     <string name="password_visible">Password visible</string>
     <string name="no_options_available">No options available</string>
+    <string name="live_badge">LIVE</string>
 </resources>
