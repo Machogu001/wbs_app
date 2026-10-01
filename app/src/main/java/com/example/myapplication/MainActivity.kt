@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.content.Intent
+import android.bluetooth.BluetoothClass
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -98,6 +101,8 @@ private fun JSONArray.toFlexibleOptionPairs(): List<Pair<String, String>> {
 class MainActivity : AppCompatActivity() {
     private companion object {
         private const val PREF_THEME_PREFERENCE = "theme_preference"
+        private const val PREF_BLUETOOTH_PRINTER = "bluetooth_printer_address"
+        private const val PREF_BLUETOOTH_PAPER_DOTS = "bluetooth_printer_dots"
         private val VALID_THEME_PREFERENCES = setOf("system", "light", "dark")
 
         // Set right before a theme change initiated from the Profile screen is
@@ -170,6 +175,8 @@ class MainActivity : AppCompatActivity() {
     private val toneAmber by lazy { Tone(amberDark, tintAmber, tintAmber, amberDark) }
     private val toneRed by lazy { Tone(dangerDark, tintRed, tintRed, dangerDark) }
     private lateinit var photoPicker: ActivityResultLauncher<Array<String>>
+    private lateinit var bluetoothPermission: ActivityResultLauncher<String>
+    private var pendingBluetoothPrint: (() -> Unit)? = null
     private val locationPermissionRequestCode = 2101
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var screenEpoch = 0L
@@ -213,6 +220,11 @@ class MainActivity : AppCompatActivity() {
         // light/dark mode from the very first frame - no flash, no recreation.
         applyThemePreference(preferences.getString(PREF_THEME_PREFERENCE, "system"), persist = false)
         super.onCreate(savedInstanceState)
+        bluetoothPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val action = pendingBluetoothPrint
+            pendingBluetoothPrint = null
+            if (granted) action?.invoke() else toast(getString(R.string.print_bluetooth_permission_denied))
+        }
         photoPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             selectedPhoto = uri
             uri?.let {
@@ -1851,6 +1863,11 @@ class MainActivity : AppCompatActivity() {
                         description = "Settlements applied to your account during the statement period."
                     ) {
                         addPaymentRows(this, payments, true)
+                    })
+                    form.addView(actionButton(getString(R.string.statement_pdf_button)).apply {
+                        setOnClickListener {
+                            showDocumentViewer(api.resolveUrl("document.php?type=statement"), getString(R.string.statement_pdf_title))
+                        }
                     })
                     addBack(form)
                     show(form)
@@ -5794,6 +5811,7 @@ class MainActivity : AppCompatActivity() {
                         "${proforma.optString("full_name")} • ${proforma.optString("account_number")}",
                         "${proforma.optString("user_status")} • ${money(proforma.optDouble("outstanding_amount"))} outstanding"
                     ))
+                    addDocumentButton(form, "Open proforma", proforma.optString("document_url"))
                     proforma.optString("share_url").takeIf(String::isNotBlank)?.let { shareUrl ->
                         form.addView(secondaryButton("Share payment link").apply {
                             setOnClickListener { shareLink(normalizeExternalUrl(shareUrl), "Registration proforma") }
@@ -7591,6 +7609,7 @@ class MainActivity : AppCompatActivity() {
             handleError(error)
             return
         }
+        val pdfBytes = runCatching { file.readBytes() }.getOrNull()
         file.delete()
         if (renderer.pageCount == 0) {
             renderer.close()
@@ -7617,6 +7636,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(8) }
         }
+        if (pdfBytes != null) form.addView(printButton(pdfBytes, title))
         form.addView(controls)
         controls.addView(previous, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         controls.addView(pageLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -7646,6 +7666,105 @@ class MainActivity : AppCompatActivity() {
         show(form)
         activePdfRenderer = renderer
         activePdfDescriptor = descriptor
+    }
+
+    private fun printButton(pdf: ByteArray, title: String) = actionButton(getString(R.string.print_button)).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(10) }
+        setOnClickListener { choosePrinter(pdf, title) }
+    }
+
+    private fun choosePrinter(pdf: ByteArray, title: String) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.print_choose_title, title))
+            .setItems(arrayOf(getString(R.string.print_option_network), getString(R.string.print_option_bluetooth))) { _, which ->
+                if (which == 0) {
+                    try {
+                        DocumentPrinter.printWithSystem(this, pdf, title)
+                    } catch (error: Exception) {
+                        handleError(error)
+                    }
+                } else {
+                    withBluetoothPermission { chooseBluetoothPrinter(pdf, title) }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun withBluetoothPermission(action: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+            action()
+        } else {
+            pendingBluetoothPrint = action
+            bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
+
+    private fun chooseBluetoothPrinter(pdf: ByteArray, title: String) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+        if (adapter == null) {
+            toast(getString(R.string.print_bluetooth_unavailable))
+            return
+        }
+        if (!adapter.isEnabled) {
+            toast(getString(R.string.print_bluetooth_off))
+            return
+        }
+        val devices = adapter.bondedDevices.orEmpty()
+            .sortedWith(compareByDescending<BluetoothDevice> {
+                it.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.IMAGING
+            }.thenBy { it.name.orEmpty() })
+        if (devices.isEmpty()) {
+            toast(getString(R.string.print_bluetooth_no_paired))
+            return
+        }
+        val lastAddress = preferences.getString(PREF_BLUETOOTH_PRINTER, null)
+        val checked = devices.indexOfFirst { it.address == lastAddress }
+        val labels = devices.map { device -> device.name?.takeIf(String::isNotBlank) ?: device.address }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.print_bluetooth_choose)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                dialog.dismiss()
+                chooseThermalWidth(devices[which], pdf, title)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun chooseThermalWidth(device: BluetoothDevice, pdf: ByteArray, title: String) {
+        val widths = intArrayOf(384, 576)
+        val savedWidth = preferences.getInt(PREF_BLUETOOTH_PAPER_DOTS, 576)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.print_paper_width)
+            .setSingleChoiceItems(
+                arrayOf(getString(R.string.print_paper_58), getString(R.string.print_paper_80)),
+                widths.indexOf(savedWidth).coerceAtLeast(0)
+            ) { dialog, which ->
+                dialog.dismiss()
+                preferences.edit {
+                    putString(PREF_BLUETOOTH_PRINTER, device.address)
+                    putInt(PREF_BLUETOOTH_PAPER_DOTS, widths[which])
+                }
+                sendToBluetoothPrinter(device, pdf, title, widths[which])
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun sendToBluetoothPrinter(device: BluetoothDevice, pdf: ByteArray, title: String, widthDots: Int) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
+        val printerName = device.name?.takeIf(String::isNotBlank) ?: device.address
+        toast(getString(R.string.print_bluetooth_sending, title, printerName))
+        DocumentPrinter.printToBluetooth(cacheDir, device, pdf, widthDots) { result ->
+            runOnUiThread {
+                result.onSuccess { toast(getString(R.string.print_bluetooth_done, printerName)) }
+                    .onFailure { toast(getString(R.string.print_bluetooth_failed, printerName)) }
+            }
+        }
     }
 
     private fun showImageDocument(file: File, title: String) {

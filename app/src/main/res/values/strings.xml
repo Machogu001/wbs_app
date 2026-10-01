@@ -34,4 +34,21 @@
     <string name="live_badge">LIVE</string>
     <string name="share_link_title">Share %1$s</string>
     <string name="document_unavailable">This document could not be opened in the app. Please try again later.</string>
+    <string name="print_button">Print</string>
+    <string name="print_choose_title">Print %1$s</string>
+    <string name="print_option_network">Wi-Fi / network printer</string>
+    <string name="print_option_bluetooth">Bluetooth thermal printer</string>
+    <string name="print_bluetooth_choose">Choose a paired printer</string>
+    <string name="print_bluetooth_permission_denied">Bluetooth permission is needed to print to a Bluetooth printer.</string>
+    <string name="print_bluetooth_unavailable">This device does not support Bluetooth.</string>
+    <string name="print_bluetooth_off">Turn on Bluetooth, then try printing again.</string>
+    <string name="print_bluetooth_no_paired">No paired Bluetooth devices. Pair the printer in Bluetooth settings first.</string>
+    <string name="print_paper_width">Paper width</string>
+    <string name="print_paper_58">58 mm (2 inch)</string>
+    <string name="print_paper_80">80 mm (3 inch)</string>
+    <string name="print_bluetooth_sending">Sending %1$s to %2$s…</string>
+    <string name="print_bluetooth_done">Printed on %1$s.</string>
+    <string name="print_bluetooth_failed">Could not print on %1$s. Check that it is on and in range.</string>
+    <string name="statement_pdf_button">View / print statement PDF</string>
+    <string name="statement_pdf_title">Account statement</string>
 </resources>
