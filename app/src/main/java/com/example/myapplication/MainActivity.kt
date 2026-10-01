@@ -120,8 +120,14 @@ class MainActivity : AppCompatActivity() {
     private data class ScreenSnapshot(
         val view: View,
         val backAction: (() -> Unit)?,
-        val reload: ScreenLoad? = null
+        val reload: ScreenLoad? = null,
+        val refreshLayout: PullRefreshLayout? = null
     )
+    private data class NavItem(val key: String, val label: String, val icon: Int, val action: () -> Unit)
+    // Lets the header menu button find the side drawer that belongs to its own screen.
+    private class DrawerController(val open: () -> Unit)
+    private var activeNavKey = "home"
+    private var closeOpenDrawer: (() -> Unit)? = null
     private data class ScreenLoad(val path: String, val callback: (Result<JSONObject>) -> Unit)
     private val navigationHistory = mutableListOf<ScreenSnapshot>()
     private val forwardHistory = mutableListOf<ScreenSnapshot>()
@@ -234,6 +240,10 @@ class MainActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                closeOpenDrawer?.let {
+                    it()
+                    return
+                }
                 if (!navigateBack()) finishAfterTransition()
             }
         })
@@ -1191,6 +1201,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDashboard() {
+        activeNavKey = "home"
         backAction = null
         showLoading("Loading account")
         api.request("dashboard.php") { result ->
@@ -1491,6 +1502,250 @@ class MainActivity : AppCompatActivity() {
         feature("Activity logs", ::showActivityLogs, isAdminUser()),
         feature("System logs", ::showSystemLogs, can("manage_settings"))
     )
+
+    // ---------------------------------------------------------------------
+    // App navigation: a bottom bar for the most-used destinations and a
+    // top-left side menu with every feature the signed-in user may open.
+    // ---------------------------------------------------------------------
+    private fun showsAppNavigation(): Boolean =
+        token != null && currentUser != null && currentUser?.optBoolean("must_change_password") != true
+
+    private fun bottomNavItems(): List<NavItem> = if (isCustomerUser()) {
+        listOf(
+            NavItem("home", getString(R.string.nav_home), R.drawable.ic_home, ::showDashboard),
+            NavItem("bills", getString(R.string.nav_bills), R.drawable.ic_receipt) { showBills() },
+            NavItem("payments", getString(R.string.nav_payments), R.drawable.ic_wallet, ::showPayments),
+            NavItem("support", getString(R.string.nav_support), R.drawable.ic_support, ::showSupportChat),
+            NavItem("profile", getString(R.string.nav_profile), R.drawable.ic_person, ::showProfile)
+        )
+    } else {
+        listOfNotNull(
+            NavItem("home", getString(R.string.nav_home), R.drawable.ic_home, ::showDashboard),
+            NavItem("customers", getString(R.string.nav_customers), R.drawable.ic_group, ::showClientSearch)
+                .takeIf { can("view_invoicing", "correct_bills", "view_payments", "view_customers") },
+            NavItem("payments", getString(R.string.nav_payments), R.drawable.ic_wallet, ::showPaymentsWorkspace)
+                .takeIf { can("view_payments", "receive_payments") },
+            NavItem("support", getString(R.string.nav_messages), R.drawable.ic_support, ::showSupportChat)
+                .takeIf { operationsFeatures().any { it.first == "Support chat" } },
+            NavItem("profile", getString(R.string.nav_profile), R.drawable.ic_person, ::showProfile)
+        )
+    }
+
+    private fun openNavDestination(key: String, action: () -> Unit) {
+        closeOpenDrawer?.invoke()
+        activeNavKey = key
+        childScreen()
+        action()
+    }
+
+    private fun bottomNavigationBar() = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        background = GradientDrawable().apply {
+            setColor(cardBackground)
+            setStroke(dp(1), border)
+        }
+        elevation = dp(8).toFloat()
+        bottomNavItems().forEach { item ->
+            val selected = item.key == activeNavKey
+            val color = if (selected) primaryDark else muted
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                minimumHeight = dp(56)
+                isClickable = true
+                isFocusable = true
+                contentDescription = item.label
+                setPadding(0, dp(4), 0, dp(4))
+                background = if (selected) roundedDrawable(tintBlue, tintBlue, 16f) else null
+                addView(iconView(item.icon, color, 22).apply {
+                    (layoutParams as LinearLayout.LayoutParams).gravity = Gravity.CENTER_HORIZONTAL
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = item.label
+                    textSize = 11.5f
+                    maxLines = 1
+                    gravity = Gravity.CENTER
+                    setTextColor(color)
+                    if (selected) setTypeface(typeface, Typeface.BOLD)
+                    setPadding(0, dp(3), 0, 0)
+                })
+                setOnClickListener { openNavDestination(item.key, item.action) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(2)
+                marginEnd = dp(2)
+            })
+        }
+    }
+
+    private fun menuButton() = ImageView(this).apply {
+        setImageResource(R.drawable.ic_menu)
+        setColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
+        contentDescription = getString(R.string.nav_open_menu)
+        isClickable = true
+        isFocusable = true
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+        background = roundedDrawable(Color.argb(46, 255, 255, 255), Color.argb(70, 255, 255, 255), 14f)
+        layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) }
+        setOnClickListener {
+            var node: android.view.ViewParent? = parent
+            while (node != null && (node as? View)?.tag !is DrawerController) node = node.parent
+            ((node as? View)?.tag as? DrawerController)?.open?.invoke()
+        }
+    }
+
+    private fun drawerItems(): List<Pair<String, List<NavItem>>> {
+        val sections = mutableListOf<Pair<String, List<NavItem>>>()
+        if (isCustomerUser()) {
+            sections += getString(R.string.nav_section_account) to listOf(
+                NavItem("home", getString(R.string.nav_home), R.drawable.ic_home, ::showDashboard),
+                NavItem("statement", "Statement", R.drawable.ic_receipt, ::showStatement),
+                NavItem("bills", getString(R.string.nav_bills), R.drawable.ic_receipt) { showBills() },
+                NavItem("payments", getString(R.string.nav_payments), R.drawable.ic_wallet, ::showPayments),
+                NavItem("meters", "Meters", R.drawable.ic_meter, ::showMeters),
+                NavItem("readings", "Readings", R.drawable.ic_circle_clock, ::showReadings),
+                NavItem("submit_reading", "Submit reading", R.drawable.ic_meter, ::showSubmitReading),
+                NavItem("complaints", "Complaints", R.drawable.ic_circle_alert, ::showComplaints),
+                NavItem("support", "Support chat", R.drawable.ic_support, ::showSupportChat)
+            )
+        } else {
+            sections += getString(R.string.nav_section_general) to listOf(
+                NavItem("home", getString(R.string.nav_home), R.drawable.ic_home, ::showDashboard)
+            )
+            fun group(title: String, icon: Int, features: List<Pair<String, () -> Unit>>) {
+                if (features.isNotEmpty()) {
+                    sections += title to features.map { (label, action) -> NavItem("", label, icon, action) }
+                }
+            }
+            group("Customers & service", R.drawable.ic_group, customersFeatures())
+            group("Billing & payments", R.drawable.ic_receipt, billingFeatures())
+            group("Finance & accounting", R.drawable.ic_wallet, financeFeatures())
+            group("Operations & support", R.drawable.ic_support, operationsFeatures())
+            group("System administration", R.drawable.ic_admin, systemFeatures())
+        }
+        sections += getString(R.string.nav_section_settings) to listOf(
+            NavItem("profile", getString(R.string.nav_profile), R.drawable.ic_person, ::showProfile),
+            NavItem("", getString(R.string.nav_sign_out), R.drawable.ic_logout, ::performSignOut)
+        )
+        return sections
+    }
+
+    private fun financeFeatures() = listOfNotNull(
+        feature("Approvals", ::showApprovals, can("manage_approvals")),
+        feature("Fund transfers", ::showAccountingTransfers, can("view_accounting")),
+        feature("Accounting overview", ::showAccountingOverview, can("view_accounting")),
+        feature("General ledger", ::showAccountingLedger, can("view_accounting")),
+        feature("Budgets", ::showAccountingBudget, can("view_accounting")),
+        feature("Accounting reports", ::showAccountingReports, can("view_accounting")),
+        feature("Business reports", ::showReports, can("view_reports"))
+    )
+
+    private fun attachSideDrawer(container: FrameLayout) {
+        val panelWidth = minOf(dp(320), (resources.displayMetrics.widthPixels * 0.84f).toInt())
+        val scrim = View(this).apply {
+            setBackgroundColor(Color.argb(120, 6, 16, 32))
+            alpha = 0f
+            visibility = View.GONE
+            isClickable = true
+        }
+        val panel = ScrollView(this).apply {
+            setBackgroundColor(cardBackground)
+            elevation = dp(16).toFloat()
+            isVerticalScrollBarEnabled = false
+            visibility = View.GONE
+            translationX = -panelWidth.toFloat()
+            addView(drawerContent())
+        }
+        container.addView(scrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        container.addView(panel, FrameLayout.LayoutParams(panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
+        lateinit var close: () -> Unit
+        close = {
+            if (closeOpenDrawer === close) closeOpenDrawer = null
+            scrim.animate().alpha(0f).setDuration(180).withEndAction { scrim.visibility = View.GONE }.start()
+            panel.animate().translationX(-panelWidth.toFloat()).setDuration(200)
+                .withEndAction { panel.visibility = View.GONE }.start()
+        }
+        scrim.setOnClickListener { close() }
+        container.tag = DrawerController {
+            scrim.visibility = View.VISIBLE
+            panel.visibility = View.VISIBLE
+            scrim.animate().alpha(1f).setDuration(180).start()
+            panel.animate().translationX(0f).setDuration(220).start()
+            closeOpenDrawer = close
+        }
+    }
+
+    private fun drawerContent() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, 0, 0, dp(24))
+        val user = currentUser
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(26), dp(22), dp(22))
+            background = GradientDrawable().apply {
+                colors = intArrayOf(navyDark, navy, headerGradientEnd)
+                orientation = GradientDrawable.Orientation.TL_BR
+            }
+            addView(TextView(this@MainActivity).apply {
+                text = getString(R.string.app_name).uppercase(Locale.getDefault())
+                textSize = 11.5f
+                letterSpacing = 0.14f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.rgb(210, 224, 243))
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = user?.optString("full_name").orEmpty().ifBlank { getString(R.string.app_name) }
+                textSize = 20f
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                setPadding(0, dp(10), 0, 0)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = listOfNotNull(
+                    userRole().replaceFirstChar(Char::uppercase),
+                    user?.optString("account_number")?.takeIf(String::isNotBlank)
+                ).joinToString(" • ")
+                textSize = 13.5f
+                setTextColor(Color.rgb(214, 225, 240))
+                setPadding(0, dp(4), 0, 0)
+            })
+        })
+        drawerItems().forEach { (section, items) ->
+            addView(TextView(this@MainActivity).apply {
+                text = section.uppercase(Locale.getDefault())
+                textSize = 11.5f
+                letterSpacing = 0.1f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(muted)
+                setPadding(dp(22), dp(18), dp(22), dp(6))
+            })
+            items.forEach { item ->
+                val selected = item.key.isNotBlank() && item.key == activeNavKey
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(48)
+                    isClickable = true
+                    isFocusable = true
+                    setPadding(dp(14), 0, dp(14), 0)
+                    background = if (selected) roundedDrawable(tintBlue, tintBlue, 14f) else null
+                    addView(iconView(item.icon, if (selected) primaryDark else headingText, 20))
+                    addView(TextView(this@MainActivity).apply {
+                        text = item.label
+                        textSize = 15f
+                        setTextColor(if (selected) primaryDark else textPrimary)
+                        if (selected) setTypeface(typeface, Typeface.BOLD)
+                        setPadding(dp(16), 0, 0, 0)
+                    })
+                    setOnClickListener { openNavDestination(item.key, item.action) }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginStart = dp(8)
+                    marginEnd = dp(8)
+                })
+            }
+        }
+    }
 
     private fun screenSection(screen: JSONObject, key: String): JSONObject? {
         val sections = screen.optJSONArray("sections") ?: return null
@@ -6257,20 +6512,31 @@ class MainActivity : AppCompatActivity() {
             addView(scroll)
         }
         root.setOnRefreshListener { refreshScreen(root) }
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+        closeOpenDrawer = null
+        val container = FrameLayout(this)
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(root, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        container.addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (showsAppNavigation()) {
+            column.addView(bottomNavigationBar())
+            attachSideDrawer(container)
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        setContentView(root)
-        root.post {
-            ViewCompat.requestApplyInsets(root)
+        setContentView(container)
+        container.post {
+            ViewCompat.requestApplyInsets(container)
         }
         // Status/navigation bar backgrounds and icon appearance both derive from
         // the effective night mode: dark background + light icons at night,
         // light background + dark icons otherwise.
         val lightBars = !isNightModeActive()
-        WindowInsetsControllerCompat(window, root).apply {
+        WindowInsetsControllerCompat(window, container).apply {
             isAppearanceLightStatusBars = lightBars
             isAppearanceLightNavigationBars = lightBars
         }
@@ -6285,14 +6551,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 forwardHistory.clear()
             }
-            displayedScreen = ScreenSnapshot(root, backAction, screenLoad)
+            displayedScreen = ScreenSnapshot(container, backAction, screenLoad, root)
         }
     }
 
     // Pull-to-refresh replays the GET request that originally built the screen; the
     // refreshed result replaces the current screen in place instead of adding history.
     private fun refreshScreen(root: PullRefreshLayout) {
-        val load = displayedScreen?.takeIf { it.view === root }?.reload
+        val load = displayedScreen?.takeIf { it.refreshLayout === root }?.reload
         if (load == null) {
             root.isRefreshing = false
             return
@@ -6321,7 +6587,8 @@ class MainActivity : AppCompatActivity() {
         replaceOnNextShow = false
         displayedScreen = snapshot
         backAction = snapshot.backAction
-        (snapshot.view as? PullRefreshLayout)?.isRefreshing = false
+        snapshot.refreshLayout?.isRefreshing = false
+        closeOpenDrawer = null
         setContentView(snapshot.view)
         ViewCompat.requestApplyInsets(snapshot.view)
     }
@@ -6365,7 +6632,15 @@ class MainActivity : AppCompatActivity() {
                 val elapsed = event.eventTime - swipeStartTime
                 val isSwipe = kotlin.math.abs(dx) > dp(90) && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 2 && elapsed < 700
                 val root = window.decorView
-                if (isSwipe && !canScrollHorizontallyAt(root, swipeStartX, swipeStartY, if (dx > 0) -1 else 1)) {
+                val drawerClose = closeOpenDrawer
+                if (isSwipe && dx < 0 && drawerClose != null) {
+                    drawerClose()
+                    val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                    super.dispatchTouchEvent(cancel)
+                    cancel.recycle()
+                    return true
+                }
+                if (isSwipe && drawerClose == null && !canScrollHorizontallyAt(root, swipeStartX, swipeStartY, if (dx > 0) -1 else 1)) {
                     val handled = if (dx > 0) navigateBack() else navigateForward()
                     if (handled) {
                         val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
@@ -6410,6 +6685,7 @@ class MainActivity : AppCompatActivity() {
         addView(LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            if (showsAppNavigation()) addView(menuButton())
             addView(TextView(this@MainActivity).apply {
                 text = getString(R.string.app_name).uppercase(Locale.getDefault())
                 textSize = 11.5f

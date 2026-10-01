@@ -51,4 +51,16 @@
     <string name="print_bluetooth_failed">Could not print on %1$s. Check that it is on and in range.</string>
     <string name="statement_pdf_button">View / print statement PDF</string>
     <string name="statement_pdf_title">Account statement</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_bills">Bills</string>
+    <string name="nav_payments">Payments</string>
+    <string name="nav_support">Support</string>
+    <string name="nav_messages">Messages</string>
+    <string name="nav_customers">Customers</string>
+    <string name="nav_profile">Profile</string>
+    <string name="nav_sign_out">Sign out</string>
+    <string name="nav_open_menu">Open menu</string>
+    <string name="nav_section_account">My account</string>
+    <string name="nav_section_general">General</string>
+    <string name="nav_section_settings">Settings</string>
 </resources>
