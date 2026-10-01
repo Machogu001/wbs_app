@@ -1375,16 +1375,98 @@ class MainActivity : AppCompatActivity() {
             Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
             )))
         })
-        if (user?.optString("role", "customer")?.lowercase() != "customer") {
-            form.addView(sectionTitle("Staff workspaces"))
-            addWorkspace(form, "Customers & service", "Customer records, onboarding, locations and complaints", R.drawable.ic_group, ::showCustomersWorkspace)
-            addWorkspace(form, "Billing & payments", "Collections, invoicing, corrections and payment operations", R.drawable.ic_receipt, ::showBillingWorkspace)
-            addWorkspace(form, "Finance & accounting", "Approvals, reports, ledgers, budgets and transfers", R.drawable.ic_wallet, ::showFinanceWorkspace)
-            addWorkspace(form, "Operations & support", "Demand notices, inquiries, integrations and publishing", R.drawable.ic_support, ::showOperationsWorkspace)
-            addWorkspace(form, "System administration", "Staff access, permissions, settings and audit logs", R.drawable.ic_admin, ::showSystemWorkspace)
+        if (isStaffUser()) {
+            val workspaces = listOfNotNull(
+                Triple("Customers & service", "Customer records, onboarding, locations and complaints", R.drawable.ic_group)
+                    .takeIf { customersFeatures().isNotEmpty() }?.let { it to ::showCustomersWorkspace },
+                Triple("Billing & payments", "Collections, invoicing, corrections and payment operations", R.drawable.ic_receipt)
+                    .takeIf { billingFeatures().isNotEmpty() }?.let { it to ::showBillingWorkspace },
+                Triple("Finance & accounting", "Approvals, reports, ledgers, budgets and transfers", R.drawable.ic_wallet)
+                    .takeIf { hasFinanceFeatures() }?.let { it to ::showFinanceWorkspace },
+                Triple("Operations & support", "Demand notices, inquiries, integrations and publishing", R.drawable.ic_support)
+                    .takeIf { operationsFeatures().isNotEmpty() }?.let { it to ::showOperationsWorkspace },
+                Triple("System administration", "Staff access, permissions, settings and audit logs", R.drawable.ic_admin)
+                    .takeIf { systemFeatures().isNotEmpty() }?.let { it to ::showSystemWorkspace }
+            )
+            if (workspaces.isNotEmpty()) {
+                form.addView(sectionTitle("Staff workspaces"))
+                workspaces.forEach { (info, action) -> addWorkspace(form, info.first, info.second, info.third, action) }
+            }
         }
         show(form)
     }
+
+    // Staff access mirrors the website: admins hold every permission, other staff roles
+    // only the permissions granted in Role permissions, and customers none. The server
+    // returns the effective list; older servers fall back to the website's role defaults.
+    private fun userRole(): String = currentUser?.optString("role", "customer").orEmpty().lowercase(Locale.ROOT).ifBlank { "customer" }
+
+    private fun isAdminUser(): Boolean = currentUser?.optBoolean("is_admin", userRole() == "admin") ?: false
+
+    private fun isStaffUser(): Boolean = currentUser?.optBoolean("is_staff", userRole() != "customer") ?: false
+
+    private fun userPermissions(): Set<String> {
+        val granted = currentUser?.optJSONArray("permissions")
+            ?: return when (userRole()) {
+                "reader" -> setOf("view_invoicing", "send_messages")
+                "finance" -> setOf(
+                    "view_customers", "view_accounting", "view_reports", "view_payments", "view_invoicing",
+                    "view_bill_detail", "manage_demand_notices", "manage_approvals", "manage_registration_proformas",
+                    "send_messages"
+                )
+                "support" -> setOf("handle_support", "view_customers", "view_bill_detail", "send_messages")
+                else -> emptySet()
+            }
+        return (0 until granted.length()).mapNotNull { granted.optString(it).takeIf(String::isNotBlank) }.toSet()
+    }
+
+    private fun can(vararg permissions: String): Boolean {
+        if (!isStaffUser()) return false
+        if (isAdminUser()) return true
+        val granted = userPermissions()
+        return permissions.any(granted::contains)
+    }
+
+    private fun feature(label: String, action: () -> Unit, allowed: Boolean) = (label to action).takeIf { allowed }
+
+    private fun customersFeatures() = listOfNotNull(
+        feature("Customers", ::showCustomers, can("view_customers")),
+        feature("Search customers", ::showClientSearch, can("view_invoicing", "correct_bills", "view_payments", "view_customers")),
+        feature("Customer management", ::showCustomerManagement, can("view_customers")),
+        feature("Onboarding tracker", ::showOnboarding, can("manage_registration_proformas", "view_customers")),
+        feature("Registration proformas", ::showRegistrationProformas, can("manage_registration_proformas")),
+        feature("Customer locations", ::showCustomerLocations, can("view_customers")),
+        feature("Manage complaints", ::showAdminComplaints, can("handle_support", "view_customers"))
+    )
+
+    private fun billingFeatures() = listOfNotNull(
+        feature("Collections", { showCollections() }, can("view_payments", "receive_payments")),
+        feature("Record payment", ::showManualPayment, can("receive_payments")),
+        feature("Payments workspace", ::showPaymentsWorkspace, can("view_payments", "receive_payments")),
+        feature("Payment transactions", ::showPaymentTransactions, can("view_payments")),
+        feature("Invoicing", ::showInvoicing, can("view_invoicing")),
+        feature("Bill correction", ::showBillCorrection, can("correct_bills"))
+    )
+
+    private fun hasFinanceFeatures() = can("manage_approvals", "view_accounting", "view_reports")
+
+    private fun operationsFeatures() = listOfNotNull(
+        feature("Support chat", ::showSupportChat, can("handle_support", "send_messages") || userRole() in setOf("support", "finance")),
+        feature("Messaging center", ::showMessagingCenter, can("send_messages", "handle_support")),
+        feature("Demand notices", ::showDemandNotices, can("manage_demand_notices")),
+        feature("Support inquiries", ::showSupportInquiries, can("handle_support")),
+        feature("Integration health", ::showIntegrationHealth, isAdminUser()),
+        feature("Blog", ::showBlog, isStaffUser())
+    )
+
+    private fun systemFeatures() = listOfNotNull(
+        feature("Staff users", ::showStaffUsers, isAdminUser()),
+        feature("Role permissions", ::showRolePermissions, isAdminUser()),
+        feature("Settings", ::showSettings, can("manage_settings")),
+        feature("Terms & conditions", ::showTermsConditions, can("manage_settings")),
+        feature("Activity logs", ::showActivityLogs, isAdminUser()),
+        feature("System logs", ::showSystemLogs, can("manage_settings"))
+    )
 
     private fun screenSection(screen: JSONObject, key: String): JSONObject? {
         val sections = screen.optJSONArray("sections") ?: return null
@@ -1420,35 +1502,23 @@ class MainActivity : AppCompatActivity() {
     private fun showCustomersWorkspace() = showWorkspace(
         "Customers & service",
         "Manage customer relationships and field service.",
-        listOf(
-            "Customers" to ::showCustomers,
-            "Search customers" to ::showClientSearch,
-            "Customer management" to ::showCustomerManagement,
-            "Onboarding tracker" to ::showOnboarding,
-            "Registration proformas" to ::showRegistrationProformas,
-            "Customer locations" to ::showCustomerLocations,
-            "Manage complaints" to ::showAdminComplaints
-        )
+        customersFeatures()
     )
 
     private fun showBillingWorkspace() = showWorkspace(
         "Billing & payments",
         "Manage billing, collections and payment workflows.",
-        listOf(
-            "Collections" to { showCollections() },
-            "Record payment" to ::showManualPayment,
-            "Payments workspace" to ::showPaymentsWorkspace,
-            "Payment transactions" to ::showPaymentTransactions,
-            "Invoicing" to ::showInvoicing,
-            "Bill correction" to ::showBillCorrection
-        )
+        billingFeatures()
     )
 
     private fun showFinanceWorkspace() {
         backAction = ::showDashboard
         val form = screen("Finance & accounting", "A clear workspace for approvals, books and financial reports.")
-        form.addView(sectionTitle("Finance operations"))
-        addWorkspace(
+        val canApprove = can("manage_approvals")
+        val canAccount = can("view_accounting")
+        val canReport = can("view_reports")
+        if (canApprove || canAccount) form.addView(sectionTitle("Finance operations"))
+        if (canApprove) addWorkspace(
             form,
             "Approvals",
             "Review payments and requests that need a finance decision.",
@@ -1456,7 +1526,7 @@ class MainActivity : AppCompatActivity() {
             ::showApprovals,
             toneAmber
         )
-        addWorkspace(
+        if (canAccount) addWorkspace(
             form,
             "Fund transfers",
             "Move funds between accounts and review recent transfers.",
@@ -1464,8 +1534,8 @@ class MainActivity : AppCompatActivity() {
             ::showAccountingTransfers,
             toneTeal
         )
-        form.addView(sectionTitle("Accounting"))
-        addWorkspace(
+        if (canAccount) form.addView(sectionTitle("Accounting"))
+        if (canAccount) addWorkspace(
             form,
             "Accounting overview",
             "Chart of accounts, trial balance and period controls.",
@@ -1473,7 +1543,7 @@ class MainActivity : AppCompatActivity() {
             ::showAccountingOverview,
             toneBlue
         )
-        addWorkspace(
+        if (canAccount) addWorkspace(
             form,
             "General ledger",
             "Browse account movements and journal entry details.",
@@ -1481,7 +1551,7 @@ class MainActivity : AppCompatActivity() {
             ::showAccountingLedger,
             toneBlue
         )
-        addWorkspace(
+        if (canAccount) addWorkspace(
             form,
             "Budgets",
             "Set yearly budgets and compare them with actuals.",
@@ -1489,8 +1559,8 @@ class MainActivity : AppCompatActivity() {
             ::showAccountingBudget,
             toneAmber
         )
-        form.addView(sectionTitle("Reports"))
-        addWorkspace(
+        if (canAccount || canReport) form.addView(sectionTitle("Reports"))
+        if (canAccount) addWorkspace(
             form,
             "Accounting reports",
             "Balance sheet, profit and loss, cash flow and receivables.",
@@ -1498,7 +1568,7 @@ class MainActivity : AppCompatActivity() {
             ::showAccountingReports,
             toneTeal
         )
-        addWorkspace(
+        if (canReport) addWorkspace(
             form,
             "Business reports",
             "Operational and collection reporting.",
@@ -1512,27 +1582,13 @@ class MainActivity : AppCompatActivity() {
     private fun showOperationsWorkspace() = showWorkspace(
         "Operations & support",
         "Monitor service communications and integrations.",
-        listOf(
-            "Support chat" to ::showSupportChat,
-            "Messaging center" to ::showMessagingCenter,
-            "Demand notices" to ::showDemandNotices,
-            "Support inquiries" to ::showSupportInquiries,
-            "Integration health" to ::showIntegrationHealth,
-            "Blog" to ::showBlog
-        )
+        operationsFeatures()
     )
 
     private fun showSystemWorkspace() = showWorkspace(
         "System administration",
         "Control staff access, configuration and audit records.",
-        listOf(
-            "Staff users" to ::showStaffUsers,
-            "Role permissions" to ::showRolePermissions,
-            "Settings" to ::showSettings,
-            "Terms & conditions" to ::showTermsConditions,
-            "Activity logs" to ::showActivityLogs,
-            "System logs" to ::showSystemLogs
-        )
+        systemFeatures()
     )
 
     private fun showWorkspace(
@@ -7517,8 +7573,9 @@ class MainActivity : AppCompatActivity() {
                 showDocumentViewer(url, title)
             path == "/payment-receipt" ->
                 showDocumentViewer(url.replaceFirst("/payment-receipt", "/payment-receipt-pdf"), title)
-            path == "/admin/payments" -> loadPaymentsWorkspace(uri.getQueryParameter("account").orEmpty())
-            path == "/admin/users" ->
+            path == "/admin/payments" && can("view_payments", "receive_payments") ->
+                loadPaymentsWorkspace(uri.getQueryParameter("account").orEmpty())
+            path == "/admin/users" && can("view_customers") ->
                 uri.getQueryParameter("edit_id")?.toIntOrNull()?.takeIf { it > 0 }
                     ?.let(::showAdminCustomer) ?: showCustomerManagement()
             path == "/bills" -> showBills()
