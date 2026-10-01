@@ -63,4 +63,7 @@
     <string name="nav_section_general">General</string>
     <string name="nav_section_settings">Settings</string>
     <string name="trend_amounts">%1$s / %2$s</string>
+    <string name="default_reference_type" translatable="false">manual</string>
+    <string name="whole_numbers">Whole numbers</string>
+    <string name="require_accurate_gps">Require accurate GPS (≤14m)</string>
 </resources>

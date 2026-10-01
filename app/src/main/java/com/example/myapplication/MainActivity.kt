@@ -1364,7 +1364,8 @@ class MainActivity : AppCompatActivity() {
                 Triple("Readings", R.drawable.ic_circle_clock, ::showReadings),
                 Triple("Submit reading", R.drawable.ic_meter, ::showSubmitReading),
                 Triple("Complaints", R.drawable.ic_support, ::showComplaints),
-                Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
+                Triple("Support chat", R.drawable.ic_support, ::showSupportChat),
+                Triple("News", R.drawable.ic_receipt, ::showBlog)
             )))
         })
         show(form)
@@ -1694,7 +1695,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun operationsFeatures() = listOfNotNull(
         feature("Support chat", ::showSupportChat, can("handle_support", "send_messages") || userRole() in setOf("support", "finance")),
-        feature("Messaging center", ::showMessagingCenter, can("send_messages", "handle_support")),
+        feature("Messaging center", ::showMessagingCenter, can("send_messages")),
         feature("Demand notices", ::showDemandNotices, can("manage_demand_notices")),
         feature("Support inquiries", ::showSupportInquiries, can("handle_support")),
         feature("Integration health", ::showIntegrationHealth, isAdminUser()),
@@ -2438,14 +2439,19 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun showStatement() {
+        loadStatement("", "", "")
+    }
+
+    private fun loadStatement(from: String, to: String, status: String) {
             childScreen()
             showLoading("Loading statement")
-            api.request("statement.php") { result ->
+            api.request(api.query("statement.php", mapOf("from" to from, "to" to to, "status" to status))) { result ->
                 onResult(result, "Could not load statement") { response ->
                     val data = response.data()
                     val summary = data.optJSONObject("summary") ?: JSONObject()
                     val bills = data.optJSONArray("bills") ?: JSONArray()
                     val payments = data.optJSONArray("payments") ?: JSONArray()
+                    val filters = data.optJSONObject("filters") ?: JSONObject()
                     val form = screen("Account statement", "Bills and completed payments")
                     form.addView(heroBanner(
                         title = "Statement overview",
@@ -2465,6 +2471,31 @@ class MainActivity : AppCompatActivity() {
                             if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
                         )
                     )))
+                    val fromField = datePickerInput("From month", filters.optString("from", from), "month")
+                    val toField = datePickerInput("To month", filters.optString("to", to), "month")
+                    val statusField = dropdownInput(
+                        "Bill status",
+                        listOf("" to "All", "pending" to "Pending", "overdue" to "Overdue", "paid" to "Paid"),
+                        filters.optString("status", status)
+                    )
+                    form.addView(sectionPanel(
+                        title = "Statement filters",
+                        description = "Choose a billing period and status before viewing or exporting the PDF."
+                    ) {
+                        addView(fromField)
+                        addView(toField)
+                        addView(statusField)
+                        addView(buttonRow(
+                            "Apply" to {
+                                loadStatement(
+                                    fromField.text.toString().trim(),
+                                    toField.text.toString().trim(),
+                                    statusField.tag?.toString().orEmpty()
+                                )
+                            },
+                            "Clear" to { loadStatement("", "", "") }
+                        ))
+                    })
                     form.addView(sectionPanel(
                         title = "Billing history",
                         description = "A statement-style list of bills, closer to the web statement and billing history views."
@@ -2481,7 +2512,10 @@ class MainActivity : AppCompatActivity() {
                     })
                     form.addView(actionButton(getString(R.string.statement_pdf_button)).apply {
                         setOnClickListener {
-                            showDocumentViewer(api.resolveUrl("document.php?type=statement"), getString(R.string.statement_pdf_title))
+                            val params = mutableListOf("type=statement")
+                            fromField.text.toString().trim().takeIf(String::isNotBlank)?.let { params += "from=${Uri.encode(it)}" }
+                            toField.text.toString().trim().takeIf(String::isNotBlank)?.let { params += "to=${Uri.encode(it)}" }
+                            showDocumentViewer(api.resolveUrl("document.php?${params.joinToString("&")}"), getString(R.string.statement_pdf_title))
                         }
                     })
                     addBack(form)
@@ -2572,10 +2606,10 @@ class MainActivity : AppCompatActivity() {
             load()
     }
 
-    private fun showBills(status: String = "", limit: Int = 100, page: Int = 1) {
+    private fun showBills(status: String = "", limit: Int = 100, page: Int = 1, from: String = "", to: String = "") {
         childScreen()
         showLoading("Loading bills")
-        val path = api.query("bills.php", mapOf("limit" to limit.toString(), "status" to status, "page" to page.toString()))
+        val path = api.query("bills.php", mapOf("limit" to limit.toString(), "status" to status, "page" to page.toString(), "from" to from, "to" to to))
         api.request(path) { result ->
             onResult(result, "Could not load bills") { response ->
                 val data = response.data()
@@ -2585,6 +2619,8 @@ class MainActivity : AppCompatActivity() {
                 val filters = screen.optJSONArray("filters") ?: JSONArray()
                 val statusFilter = filters.optJSONObject(0)
                 val limitFilter = filters.optJSONObject(1)
+                val fromFilter = filters.optJSONObject(2)
+                val toFilter = filters.optJSONObject(3)
                 val statusOptions = statusFilter?.optJSONArray("options")?.toFlexibleOptionPairs()
                     ?.takeIf { it.isNotEmpty() }
                     ?: listOf("" to "All Bills", "pending" to "Pending", "paid" to "Paid", "overdue" to "Overdue", "cancelled" to "Cancelled")
@@ -2593,8 +2629,11 @@ class MainActivity : AppCompatActivity() {
                     ?: listOf("10" to "10", "20" to "20", "50" to "50", "100" to "100")
                 val statusField = dropdownInput(statusFilter?.optString("label").orEmpty().ifBlank { "Bill status" }, statusOptions, status)
                 val limitField = dropdownInput(limitFilter?.optString("label").orEmpty().ifBlank { "Rows" }, limitOptions, limit.toString())
+                val fromField = datePickerInput(fromFilter?.optString("label").orEmpty().ifBlank { "From month" }, fromFilter?.optString("default_value").orEmpty().ifBlank { from }, "month")
+                val toField = datePickerInput(toFilter?.optString("label").orEmpty().ifBlank { "To month" }, toFilter?.optString("default_value").orEmpty().ifBlank { to }, "month")
                 val pagination = screen.optJSONObject("pagination") ?: JSONObject()
                 val totalBills = pagination.optInt("total", data.optInt("total", bills.length()))
+                val summary = data.optJSONObject("summary") ?: JSONObject()
                 val form = screen(screen.optString("title").ifBlank { "Bills" }, "$totalBills bill(s)")
                 val outstandingTotal = (0 until bills.length()).sumOf { index ->
                     bills.optJSONObject(index)?.optDouble("outstanding_amount") ?: 0.0
@@ -2611,9 +2650,10 @@ class MainActivity : AppCompatActivity() {
                     compact = true
                 ))
                 form.addView(summaryCardGrid(listOf(
-                    summaryCard("Bills in view", bills.length().toString(), R.drawable.ic_receipt, toneBlue),
-                    summaryCard("Outstanding", money(outstandingTotal), R.drawable.ic_wallet, if (outstandingTotal > 0.01) toneAmber else toneTeal),
-                    summaryCard("Overdue", overdueCount.toString(), R.drawable.ic_warning_triangle, if (overdueCount > 0) toneRed else toneTeal)
+                    summaryCard("Bills in view", totalBills.toString(), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Paid", money(summary.optDouble("paid_amount")), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Unpaid", money(summary.optDouble("unpaid_amount", outstandingTotal)), R.drawable.ic_wallet, if (outstandingTotal > 0.01) toneAmber else toneTeal),
+                    summaryCard("Overdue", summary.optInt("overdue_count", overdueCount).toString(), R.drawable.ic_warning_triangle, if (overdueCount > 0) toneRed else toneTeal)
                 )))
                 form.addView(sectionPanel(
                     title = "Filters and exports",
@@ -2621,14 +2661,22 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     addView(statusField)
                     addView(limitField)
+                    addView(fromField)
+                    addView(toField)
                     addView(buttonRow(
                         "Apply filters" to {
                             childScreen()
-                            showBills(statusField.tag?.toString().orEmpty(), limitField.tag?.toString()?.toIntOrNull() ?: limit, 1)
+                            showBills(
+                                statusField.tag?.toString().orEmpty(),
+                                limitField.tag?.toString()?.toIntOrNull() ?: limit,
+                                1,
+                                fromField.text.toString().trim(),
+                                toField.text.toString().trim()
+                            )
                         },
                         "Clear" to {
                             childScreen()
-                            showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100, 1)
+                            showBills("", limitField.tag?.toString()?.toIntOrNull() ?: 100, 1, "", "")
                         }
                     ))
                 })
@@ -2672,10 +2720,10 @@ class MainActivity : AppCompatActivity() {
                     val limitValue = pagination.optInt("limit", limit)
                     val buttons = mutableListOf<Pair<String, () -> Unit>>()
                     if (pagination.optBoolean("has_previous_page")) {
-                        buttons += "Previous" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue - 1) }
+                        buttons += "Previous" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue - 1, fromField.text.toString().trim(), toField.text.toString().trim()) }
                     }
                     if (pagination.optBoolean("has_next_page")) {
-                        buttons += "Next" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue + 1) }
+                        buttons += "Next" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue + 1, fromField.text.toString().trim(), toField.text.toString().trim()) }
                     }
                     if (buttons.isNotEmpty()) {
                         form.addView(buttonRow(*buttons.toTypedArray()))
@@ -3037,11 +3085,11 @@ class MainActivity : AppCompatActivity() {
     private fun showPayments() {
         childScreen()
         showLoading("Loading payments")
-        api.request("payments.php?limit=100") { result ->
+        api.request("payments.php?limit=100&status=completed") { result ->
             onResult(result, "Could not load payments") { response ->
                 val data = response.data()
                 val payments = data.optJSONArray("payments") ?: JSONArray()
-                val form = screen("Payments", "${data.optInt("total", payments.length())} payment(s)")
+                val form = screen("Receipts", "${data.optInt("total", payments.length())} completed receipt(s)")
                 val completedAmount = (0 until payments.length()).sumOf { index ->
                     payments.optJSONObject(index)?.optDouble("amount") ?: 0.0
                 }
@@ -3062,10 +3110,30 @@ class MainActivity : AppCompatActivity() {
                     summaryCard("Amount", money(completedAmount), R.drawable.ic_wallet, toneBlue)
                 )))
                 form.addView(sectionPanel(
-                    title = "Payment activity",
-                    description = "Recent payment records and receipt access in the same grouped style as the web payment views."
+                    title = "Receipt history",
+                    description = "Completed payment records with receipt PDF access, matching the web receipts page."
                 ) {
-                    addPaymentRows(this, payments, true)
+                    if (payments.length() == 0) addView(empty("No completed receipts found."))
+                    for (index in 0 until payments.length()) {
+                        val payment = payments.optJSONObject(index) ?: continue
+                        val paymentId = payment.optInt("id")
+                        addView(card(
+                            payment.optString("mpesa_receipt").ifBlank { "PAY-$paymentId" },
+                            listOf(
+                                monthLabel(payment.optString("billing_month")),
+                                money(payment.optDouble("amount")),
+                                payment.optString("transaction_date")
+                            ).filter(String::isNotBlank).joinToString(" • "),
+                            toneTeal
+                        ).apply {
+                            isClickable = true
+                            isFocusable = true
+                            setOnClickListener { showPayment(paymentId) }
+                        })
+                        addView(secondaryButton("Open receipt PDF").apply {
+                            setOnClickListener { showDocumentViewer(api.resolveUrl("document.php?type=receipt&payment_id=$paymentId"), "Receipt #$paymentId") }
+                        })
+                    }
                 })
                 addBack(form)
                 show(form)
@@ -3379,9 +3447,28 @@ class MainActivity : AppCompatActivity() {
                     title = "Customer profile",
                     description = "Key identity and contact fields arranged like the web customer detail workspace."
                 ) {
+                    addField(this, "Account", customer.optString("account_number"))
                     addField(this, "Role", customer.optString("role"))
+                    addField(this, "Status", customer.optString("status"))
                     addField(this, "Phone", customer.optString("phone_number"))
                     addField(this, "Email", customer.optString("email"))
+                    addField(this, "ID number", customer.optString("id_number"))
+                    addField(this, "KRA PIN", customer.optString("tax_pin"))
+                    addField(this, "Customer type", customer.optString("customer_type"))
+                    addField(this, "Company name", customer.optString("company_name"))
+                    addField(this, "Contact person", customer.optString("contact_person_name"))
+                    addField(this, "Company registration", customer.optString("company_registration_number"))
+                    addField(this, "Address", customer.optString("address"))
+                    addField(this, "Meter", customer.optString("meter_number"))
+                    addField(this, "Connection", customer.optString("connection_type"))
+                    addField(this, "Location", customer.optString("location_label"))
+                    val lat = customer.optString("latitude")
+                    val lng = customer.optString("longitude")
+                    if (lat.isNotBlank() && lng.isNotBlank()) {
+                        addView(secondaryButton("Open location in Maps").apply {
+                            setOnClickListener { openCustomerMap(lat, lng, customer.optString("full_name")) }
+                        })
+                    }
                 })
                 val bills = data.optJSONArray("recent_bills") ?: JSONArray()
                 form.addView(sectionPanel(
@@ -3420,16 +3507,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAdminBill(id: Int, customerId: Int) {
-        backAction = { showAdminCustomer(customerId) }
+        backAction = { if (customerId > 0) showAdminCustomer(customerId) else showInvoicing() }
         showLoading("Loading bill")
         api.request(api.query("admin/bill_detail.php", mapOf("id" to id.toString()))) { result ->
             onResult(result, "Could not load bill") { response ->
                 val data = response.data()
                 val bill = data.optJSONObject("bill") ?: JSONObject()
                 val customer = data.optJSONObject("customer") ?: JSONObject()
+                val outstanding = bill.optDouble("outstanding_amount")
+                val billId = bill.optInt("id").takeIf { it > 0 } ?: id
                 val form = screen("Bill detail", customer.optString("full_name"))
                 form.addView(heroBanner(
-                    title = "Bill detail #${bill.optInt("id").takeIf { it > 0 } ?: id}",
+                    title = "Bill detail #$billId",
                     message = listOf(customer.optString("full_name"), bill.optString("account_number"))
                         .filter(String::isNotBlank)
                         .joinToString(" • "),
@@ -3439,48 +3528,121 @@ class MainActivity : AppCompatActivity() {
                     compact = true
                 ))
                 form.addView(summaryCardGrid(listOf(
-                    summaryCard("Amount", money(bill.optDouble("amount")), R.drawable.ic_receipt, toneBlue),
-                    summaryCard("Outstanding", money(bill.optDouble("outstanding_amount")), R.drawable.ic_wallet, if (bill.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal),
+                    summaryCard("Total", money(bill.optDouble("amount")), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Outstanding", money(outstanding), R.drawable.ic_wallet, if (outstanding > 0.01) toneAmber else toneTeal),
                     summaryCard("Status", bill.optString("status").ifBlank { "Unknown" }, R.drawable.ic_warning_triangle, toneForStatus(bill.optString("status"), toneBlue)),
                     summaryCard("Month", bill.optString("billing_month").ifBlank { "—" }, R.drawable.ic_circle_clock, toneTeal)
                 )))
-                form.addView(sectionPanel(
-                    title = "Bill summary",
-                    description = "Core bill details, aligned with the web bill-detail overview."
-                ) {
-                    addField(this, "Account", bill.optString("account_number"))
-                    addField(this, "Month", bill.optString("billing_month"))
+                form.addView(sectionPanel("Customer", "Account holder details shown on the web bill detail page.") {
+                    addField(this, "Name", customer.optString("full_name"))
+                    addField(this, "Account", customer.optString("account_number"))
+                    addField(this, "Meter", customer.optString("meter_number"))
+                    addField(this, "Phone", customer.optString("phone_number"))
+                    addField(this, "Email", customer.optString("email"))
+                    addField(this, "Category", customer.optString("connection_type"))
+                })
+                form.addView(sectionPanel("Bill summary", "Core bill details, taxes, readings and balances.") {
+                    addField(this, "Billing month", bill.optString("billing_month"))
                     addField(this, "Due date", bill.optString("due_date"))
-                    addField(this, "Consumption", bill.optString("consumption"))
+                    addField(this, "Status", bill.optString("status"))
+                    addField(this, "Previous reading", bill.opt("previous_reading")?.toString().orEmpty())
+                    addField(this, "Current reading", bill.opt("current_reading")?.toString().orEmpty())
+                    addField(this, "Consumption", bill.opt("consumption")?.toString().orEmpty())
+                    addField(this, "Base", money(bill.optDouble("base_amount")))
+                    addField(this, "Tax (${bill.optDouble("tax_rate")}%)", money(bill.optDouble("tax_amount")))
+                    addField(this, "Total", money(bill.optDouble("amount")))
+                    addField(this, "Outstanding", money(outstanding))
                 })
-                form.addView(sectionPanel(
-                    title = "Actions",
-                    description = "Open the invoice and review linked records from one place."
-                ) {
-                    addDocumentButton(this, "Open invoice", bill.optString("document_url"))
+                form.addView(sectionPanel("Actions", "Open the same invoice PDF and submit finance requests.") {
+                    addView(secondaryButton("Open invoice").apply {
+                        setOnClickListener { showDocumentViewer(api.resolveUrl("document.php?type=invoice&bill_id=$billId"), "Invoice") }
+                    })
+                    if (outstanding > 0.01) {
+                        val amount = input("Request amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(String.format(java.util.Locale.US, "%.2f", outstanding)) }
+                        val reason = input("Reason / justification")
+                        addView(amount); addView(reason)
+                        addView(buttonRow(
+                            "Request write-off" to { submitBillDetailAction(billId, "request_writeoff", amount.text.toString(), reason.text.toString()) },
+                            "Request waiver" to { submitBillDetailAction(billId, "request_waiver", amount.text.toString(), reason.text.toString()) }
+                        ))
+                        val planAmount = input("Installment amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(String.format(java.util.Locale.US, "%.2f", outstanding)) }
+                        val count = input("Installments (2-36)", InputType.TYPE_CLASS_NUMBER).apply { setText("3") }
+                        val frequency = dropdownInput("Frequency", listOf("monthly" to "Monthly", "weekly" to "Weekly"), "monthly")
+                        val startDate = datePickerInput("Start date", today(), "date")
+                        val planReason = input("Installment reason")
+                        listOf(planAmount, count, frequency, startDate, planReason).forEach(::addView)
+                        addView(actionButton("Request installment plan").apply {
+                            setOnClickListener {
+                                submitInstallmentRequest(billId, planAmount.text.toString(), count.text.toString(), frequency.tag?.toString().orEmpty(), startDate.text.toString(), planReason.text.toString())
+                            }
+                        })
+                    } else {
+                        addView(empty("This bill has no outstanding amount."))
+                    }
                 })
-                form.addView(sectionPanel(
-                    title = "Line items",
-                    description = "Charge breakdown for the selected bill."
-                ) {
-                    addJsonRows(this, "Line items", bill.optJSONArray("line_items"), listOf("description", "line_type", "amount"))
+                form.addView(sectionPanel("Installment plan", "Active or completed plan and payment allocation audit.") {
+                    val plan = bill.optJSONObject("installment_plan")
+                    if (plan == null) {
+                        addView(empty("No active installment plan."))
+                    } else {
+                        addField(this, "Plan #", plan.optInt("id").toString())
+                        addField(this, "Status", plan.optString("status"))
+                        addField(this, "Frequency", plan.optString("frequency"))
+                        addJsonRows(this, "Installments", plan.optJSONArray("items"), listOf("sequence_no", "due_date", "due_amount", "allocated_amount", "balance_amount", "item_status"))
+                        addJsonRows(this, "Allocation audit", bill.optJSONArray("installment_allocation_ledger"), listOf("payment_id", "mpesa_receipt", "sequence_no", "due_date", "allocated_amount"))
+                    }
                 })
-                form.addView(sectionPanel(
-                    title = "Payments",
-                    description = "Payments already allocated to this bill."
-                ) {
-                    addPaymentRows(this, bill.optJSONArray("payments"))
+                form.addView(sectionPanel("Bill line items", "Type, description, quantity, rate and amount.") {
+                    addJsonRows(this, "Line items", bill.optJSONArray("line_items"), listOf("line_type", "description", "quantity", "unit_rate", "line_amount"))
                 })
-                form.addView(sectionPanel(
-                    title = "Adjustments and approvals",
-                    description = "Credit notes and approval activity affecting this bill."
-                ) {
-                    addJsonRows(this, "Credit notes", bill.optJSONArray("credit_notes"), listOf("type", "amount_credited", "note"))
-                    addJsonRows(this, "Approval items", bill.optJSONArray("approval_items"), listOf("title", "status", "amount"))
+                form.addView(sectionPanel("Payments", "Payments already allocated to this bill.") {
+                    val payments = bill.optJSONArray("payments") ?: JSONArray()
+                    if (payments.length() == 0) addView(empty("No payments recorded."))
+                    for (index in 0 until payments.length()) {
+                        val payment = payments.optJSONObject(index) ?: continue
+                        addView(card(
+                            "#${payment.optInt("id")} • ${money(payment.optDouble("amount"))}",
+                            listOf(payment.optString("status"), payment.optString("mpesa_receipt"), payment.optString("transaction_date", payment.optString("created_at"))).filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(payment.optString("status"), toneBlue)
+                        ))
+                        if (payment.optString("document_url").isNotBlank()) {
+                            val paymentId = payment.optInt("id")
+                            addView(secondaryButton("Open receipt #$paymentId").apply {
+                                setOnClickListener { showDocumentViewer(api.resolveUrl("document.php?type=receipt&payment_id=$paymentId"), "Receipt") }
+                            })
+                        }
+                    }
+                })
+                form.addView(sectionPanel("Credit notes and approvals", "Adjustments and approval activity affecting this bill.") {
+                    addJsonRows(this, "Credit notes", bill.optJSONArray("credit_notes"), listOf("id", "type", "amount_credited", "units_credited", "note"))
+                    addJsonRows(this, "Approval items", bill.optJSONArray("approval_items"), listOf("reference_no", "title", "status", "amount", "comments"))
                 })
                 addBack(form)
                 show(form)
             }
+        }
+    }
+
+    private fun submitBillDetailAction(billId: Int, action: String, amount: String, reason: String) {
+        confirmThen("Submit ${action.removePrefix("request_").replace('_', ' ')} request for approval?") {
+            postAction("admin/bill_detail.php", JSONObject()
+                .put("action", action)
+                .put("bill_id", billId)
+                .put("request_amount", amount.toDoubleOrNull() ?: 0.0)
+                .put("reason", reason.trim())) { showAdminBill(billId, 0) }
+        }
+    }
+
+    private fun submitInstallmentRequest(billId: Int, amount: String, count: String, frequency: String, startDate: String, reason: String) {
+        confirmThen("Submit installment plan request for approval?") {
+            postAction("admin/bill_detail.php", JSONObject()
+                .put("action", "request_installment")
+                .put("bill_id", billId)
+                .put("plan_amount", amount.toDoubleOrNull() ?: 0.0)
+                .put("installment_count", count.toIntOrNull() ?: 3)
+                .put("frequency", frequency.ifBlank { "monthly" })
+                .put("start_date", startDate.ifBlank { today() })
+                .put("plan_reason", reason.trim())) { showAdminBill(billId, 0) }
         }
     }
 
@@ -3493,6 +3655,7 @@ class MainActivity : AppCompatActivity() {
                 val form = screen("Approvals", "Review pending financial requests.")
                 val summary = data.optJSONObject("summary")
                 val items = data.optJSONArray("items") ?: JSONArray()
+                val workflows = data.optJSONArray("workflow_records") ?: JSONArray()
                 form.addView(heroBanner(
                     title = "Approvals dashboard",
                     message = "Track finance requests and take action from a single workflow queue.",
@@ -3508,6 +3671,18 @@ class MainActivity : AppCompatActivity() {
                         summaryCard("Rejected", summary.opt("rejected")?.toString().orEmpty().ifBlank { "0" }, R.drawable.ic_circle_alert, toneRed)
                     )))
                 }
+                val statusOptions = listOf("" to "All", "pending" to "Pending", "approved" to "Approved", "rejected" to "Rejected")
+                val statusFilter = dropdownInput("Finance status", statusOptions, "")
+                form.addView(sectionPanel(
+                    title = "Filters",
+                    description = "Match the website finance approval status filter."
+                ) {
+                    addView(statusFilter)
+                    addView(buttonRow(
+                        "Apply" to { loadApprovals(statusFilter.tag?.toString().orEmpty()) },
+                        "Clear" to { loadApprovals("") }
+                    ))
+                })
                 form.addView(sectionPanel(
                     title = "Finance approval items",
                     description = "Pending, approved, and rejected approval requests from the finance workflow."
@@ -3516,18 +3691,45 @@ class MainActivity : AppCompatActivity() {
                     for (index in 0 until items.length()) {
                         val item = items.optJSONObject(index) ?: continue
                         addView(card(
-                            item.optString("title", item.optString("reference_no", "Approval")),
-                            listOf(item.optString("status"), money(item.optDouble("amount")), item.optString("submitted_by_name"))
+                            item.optString("reference_no", "Approval"),
+                            listOf(
+                                item.optString("title"),
+                                item.optString("status"),
+                                money(item.optDouble("amount")),
+                                item.optString("submitted_by_name"),
+                                item.optString("entity_type").replace('_', ' ')
+                            )
                                 .filter(String::isNotBlank)
-                                .joinToString(" • "),
+                                .joinToString("\n"),
                             toneForStatus(item.optString("status"), toneBlue)
                         ))
                         if (item.optString("status").lowercase() == "pending") {
+                            val note = input("Decision note (optional)")
+                            addView(note)
                             addView(buttonRow(
-                                "Approve" to { decideApproval(item.optInt("id"), "approve") },
-                                "Reject" to { decideApproval(item.optInt("id"), "reject") }
+                                "Approve" to { decideApproval(item.optInt("id"), "approve", note.text.toString()) },
+                                "Reject" to { decideApproval(item.optInt("id"), "reject", note.text.toString()) }
                             ))
                         }
+                    }
+                })
+                form.addView(sectionPanel(
+                    title = "Workflow records",
+                    description = "Meter-reading approval workflow records and current stage."
+                ) {
+                    if (workflows.length() == 0) addView(empty("No workflow records found."))
+                    for (index in 0 until workflows.length()) {
+                        val workflow = workflows.optJSONObject(index) ?: continue
+                        addView(card(
+                            workflow.optString("meter_number").ifBlank { "Workflow #${workflow.optInt("id")}" },
+                            listOf(
+                                workflow.optString("account_number"),
+                                workflow.optString("status"),
+                                "Stage ${workflow.optInt("current_stage")}",
+                                workflow.optString("created_at")
+                            ).filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(workflow.optString("status"), toneBlue)
+                        ))
                     }
                 })
                 addBack(form)
@@ -3536,11 +3738,72 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun decideApproval(id: Int, action: String) {
+    private fun loadApprovals(status: String) {
+        childScreen()
+        showLoading("Loading approvals")
+        val path = api.query("admin/approvals.php", mapOf("limit" to "200", "status" to status))
+        api.request(path) { result ->
+            onResult(result, "Could not load approvals") { response ->
+                val data = response.data()
+                val form = screen("Approvals", "Review pending financial requests.")
+                val summary = data.optJSONObject("summary")
+                val items = data.optJSONArray("items") ?: JSONArray()
+                val workflows = data.optJSONArray("workflow_records") ?: JSONArray()
+                form.addView(heroBanner("Approvals dashboard", "Track finance requests and workflow records.", "Workflow", toneBlue, R.drawable.ic_circle_check, true))
+                if (summary != null) {
+                    form.addView(summaryCardGrid(listOf(
+                        summaryCard("Pending", summary.optInt("pending").toString(), R.drawable.ic_warning_triangle, toneAmber),
+                        summaryCard("Approved", summary.optInt("approved").toString(), R.drawable.ic_circle_check, toneTeal),
+                        summaryCard("Rejected", summary.optInt("rejected").toString(), R.drawable.ic_circle_alert, toneRed)
+                    )))
+                }
+                val statusOptions = listOf("" to "All", "pending" to "Pending", "approved" to "Approved", "rejected" to "Rejected")
+                val statusFilter = dropdownInput("Finance status", statusOptions, status)
+                form.addView(sectionPanel("Filters", "Filter finance approvals by status.") {
+                    addView(statusFilter)
+                    addView(buttonRow("Apply" to { loadApprovals(statusFilter.tag?.toString().orEmpty()) }, "Clear" to { loadApprovals("") }))
+                })
+                form.addView(sectionPanel("Finance approval items", "Reference, title, amount, status, submitter and decision actions.") {
+                    if (items.length() == 0) addView(empty("No approval items found."))
+                    for (index in 0 until items.length()) {
+                        val item = items.optJSONObject(index) ?: continue
+                        addView(card(
+                            item.optString("reference_no", "Approval"),
+                            listOf(item.optString("title"), item.optString("status"), money(item.optDouble("amount")), item.optString("submitted_by_name")).filter(String::isNotBlank).joinToString("\n"),
+                            toneForStatus(item.optString("status"), toneBlue)
+                        ))
+                        if (item.optString("status").lowercase() == "pending") {
+                            val note = input("Decision note (optional)")
+                            addView(note)
+                            addView(buttonRow(
+                                "Approve" to { decideApproval(item.optInt("id"), "approve", note.text.toString()) },
+                                "Reject" to { decideApproval(item.optInt("id"), "reject", note.text.toString()) }
+                            ))
+                        }
+                    }
+                })
+                form.addView(sectionPanel("Workflow records", "Meter, account, status and current stage.") {
+                    if (workflows.length() == 0) addView(empty("No workflow records found."))
+                    for (index in 0 until workflows.length()) {
+                        val workflow = workflows.optJSONObject(index) ?: continue
+                        addView(card(
+                            workflow.optString("meter_number").ifBlank { "Workflow #${workflow.optInt("id")}" },
+                            listOf(workflow.optString("account_number"), workflow.optString("status"), "Stage ${workflow.optInt("current_stage")}").filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(workflow.optString("status"), toneBlue)
+                        ))
+                    }
+                })
+                addBack(form)
+                show(form)
+            }
+        }
+    }
+
+    private fun decideApproval(id: Int, action: String, comments: String = "") {
         api.request(
             "admin/approvals.php",
             "POST",
-            JSONObject().put("item_id", id).put("action", action).put("comments", "")
+            JSONObject().put("item_id", id).put("action", action).put("comments", comments.trim())
         ) { result ->
             runOnUiThread {
                 result.onSuccess {
@@ -3553,31 +3816,48 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAdminComplaints() {
         childScreen()
+        loadAdminComplaints("")
+    }
+
+    private fun loadAdminComplaints(status: String) {
         showLoading("Loading complaints")
-        api.request("admin/complaints.php") { result ->
+        val path = if (status.isBlank()) "admin/complaints.php" else api.query("admin/complaints.php", mapOf("status" to status))
+        api.request(path) { result ->
             onResult(result, "Could not load complaints") { response ->
                 val complaints = response.data().optJSONArray("complaints") ?: JSONArray()
                 val form = screen("Manage complaints", "${complaints.length()} complaint(s)")
+                form.addView(buttonRow(
+                    "All" to { childScreen(); loadAdminComplaints("") },
+                    "Open" to { childScreen(); loadAdminComplaints("open") },
+                    "In progress" to { childScreen(); loadAdminComplaints("in_progress") },
+                    "Resolved" to { childScreen(); loadAdminComplaints("resolved") },
+                    "Closed" to { childScreen(); loadAdminComplaints("closed") }
+                ))
                 if (complaints.length() == 0) form.addView(empty("No complaints found."))
                 for (index in 0 until complaints.length()) {
                     val complaint = complaints.optJSONObject(index) ?: continue
                     form.addView(card(
-                        complaint.optString("subject"),
-                        "${complaint.optString("status")} • ${complaint.optString("full_name")}\n" +
+                        complaint.optString("subject").ifBlank { "Complaint #${complaint.optInt("id")}" },
+                        listOf(
+                            "Account: ${complaint.optString("account_number")}",
+                            "Name: ${complaint.optString("full_name")}",
+                            "Phone: ${complaint.optString("phone_number")}",
+                            "Status: ${complaint.optString("status")}",
+                            "Submitted: ${complaint.optString("created_at")}",
                             complaint.optString("message")
+                        ).filter(String::isNotBlank).joinToString("\n"),
+                        toneForStatus(complaint.optString("status"), toneBlue)
                     ))
-                    if (complaint.optString("status") !in setOf("resolved", "closed")) {
-                        val progress = secondaryButton("Mark in progress")
-                        progress.setOnClickListener {
-                            updateComplaint(complaint.optInt("id"), "in_progress")
-                        }
-                        form.addView(progress)
-                        val resolve = actionButton("Resolve")
-                        resolve.setOnClickListener {
-                            updateComplaint(complaint.optInt("id"), "resolved")
-                        }
-                        form.addView(resolve)
-                    }
+                    val statusField = dropdownInput(
+                        "Update status",
+                        listOf("open" to "Open", "in_progress" to "In progress", "resolved" to "Resolved", "closed" to "Closed"),
+                        complaint.optString("status", "open")
+                    )
+                    form.addView(statusField)
+                    form.addView(buttonRow(
+                        "Save status" to { updateComplaint(complaint.optInt("id"), statusField.tag?.toString().orEmpty(), status) },
+                        "Open customer" to { showAdminCustomer(complaint.optInt("user_id")) }
+                    ))
                 }
                 addBack(form)
                 show(form)
@@ -3585,7 +3865,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateComplaint(id: Int, status: String) {
+    private fun updateComplaint(id: Int, status: String, returnStatus: String = "") {
         api.request(
             "admin/complaints.php",
             "POST",
@@ -3594,7 +3874,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 result.onSuccess {
                     toast(it.optString("message", "Complaint updated."))
-                    showAdminComplaints()
+                    loadAdminComplaints(returnStatus)
                 }.onFailure(::handleError)
             }
         }
@@ -3741,26 +4021,86 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showOnboarding() {
+        loadOnboarding("", "all", "all", "", "", "all")
+    }
+
+    private fun loadOnboarding(q: String, type: String, status: String, from: String, to: String, assignee: String) {
         childScreen()
         showLoading("Loading onboarding")
-        api.request("admin/onboarding_tracker.php?limit=100") { result ->
+        api.request(api.query("admin/onboarding_tracker.php", mapOf(
+            "limit" to "100",
+            "q" to q,
+            "type" to type,
+            "status" to status,
+            "from" to from,
+            "to" to to,
+            "assignee" to assignee
+        ))) { result ->
             onResult(result, "Could not load onboarding tracker") { response ->
                 val data = response.data()
                 val summary = data.optJSONObject("summary") ?: JSONObject()
                 val form = screen("Onboarding tracker", "${data.optInt("total")} record(s)")
-                form.addView(card("Needs attention", summary.optInt("attention").toString()))
-                form.addView(card("Pending payment", (
-                    summary.optInt("proforma_pending_payment") +
-                        summary.optInt("meter_pending_payment")
-                    ).toString()))
-                form.addView(card("Completed", summary.optInt("completed").toString()))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Needs attention", summary.optInt("attention").toString(), R.drawable.ic_warning_triangle, toneAmber),
+                    summaryCard("Pending payment", (
+                        summary.optInt("proforma_pending_payment") +
+                            summary.optInt("meter_pending_payment")
+                        ).toString(), R.drawable.ic_wallet, toneBlue),
+                    summaryCard("Pending setup", summary.optInt("proforma_pending_setup").toString(), R.drawable.ic_circle_clock, toneNeutral),
+                    summaryCard("Completed", summary.optInt("completed").toString(), R.drawable.ic_circle_check, toneTeal)
+                )))
+                val query = input("Search account, name, phone or email").apply { setText(q) }
+                val typeFilter = dropdownInput("Type", listOf("all" to "All", "proforma" to "Registration proformas", "meter" to "Additional meters"), type)
+                val statusFilter = dropdownInput("Status", listOf(
+                    "all" to "All",
+                    "attention" to "Needs attention",
+                    "pending_payment" to "Pending payment",
+                    "pending_setup" to "Pending setup",
+                    "complete" to "Complete"
+                ), status)
+                val fromDate = datePickerInput("From date", from, "date")
+                val toDate = datePickerInput("To date", to, "date")
+                val assigneeOptions = mutableListOf("all" to "All assignees", "unassigned" to "Unassigned")
+                val staff = data.optJSONArray("staff_assignees") ?: JSONArray()
+                for (index in 0 until staff.length()) {
+                    val row = staff.optJSONObject(index) ?: continue
+                    val id = row.optInt("id")
+                    if (id > 0) assigneeOptions += id.toString() to row.optString("full_name").ifBlank { row.optString("role") }
+                }
+                val assigneeFilter = dropdownInput("Assignee", assigneeOptions, assignee)
+                val apply = actionButton("Apply filters")
+                form.addView(sectionPanel(
+                    title = "Filters",
+                    description = "Match the web tracker filters: search, item type, status, date range and assignee."
+                ) {
+                    listOf(query, typeFilter, statusFilter, fromDate, toDate, assigneeFilter, apply).forEach(this::addView)
+                })
+                apply.setOnClickListener {
+                    loadOnboarding(
+                        query.text.toString().trim(),
+                        typeFilter.tag?.toString().orEmpty().ifBlank { "all" },
+                        statusFilter.tag?.toString().orEmpty().ifBlank { "all" },
+                        fromDate.text.toString().trim(),
+                        toDate.text.toString().trim(),
+                        assigneeFilter.tag?.toString().orEmpty().ifBlank { "all" }
+                    )
+                }
+                addRecordList(form, "Assignee workload", data.optJSONArray("assignee_summary"), listOf("name", "total", "pending", "completed"))
                 val records = data.optJSONArray("records") ?: JSONArray()
+                if (records.length() == 0) form.addView(empty("No onboarding records match these filters."))
                 for (index in 0 until records.length()) {
                     val record = records.optJSONObject(index) ?: continue
                     form.addView(card(
-                        record.optString("full_name"),
-                        "${record.optString("item_label")} • ${record.optString("overall_label")}\n" +
+                        "${record.optString("full_name")} • ${record.optString("account_number")}",
+                        listOf(
+                            "${record.optString("type")} • ${record.optString("item_label")} • ${record.optString("overall_label")}",
+                            record.optString("item_meta"),
+                            "Assigned: ${record.optString("assignee_name")}",
+                            "Created: ${record.optString("created_at")}",
+                            "Due: ${record.optString("due_date")}",
                             "${money(record.optDouble("outstanding_amount"))} outstanding"
+                        ).filter(String::isNotBlank).joinToString("\n"),
+                        toneForStatus(record.optString("overall_key"), toneBlue)
                     ))
                     record.optInt("user_id").takeIf { it > 0 }?.let { userId ->
                         form.addView(secondaryButton("Open customer").apply {
@@ -3774,6 +4114,38 @@ class MainActivity : AppCompatActivity() {
                     }
                     addDocumentButton(form, "Open document", record.optString("document_url"))
                     addUrlButton(form, "Share payment link", record.optString("open_url"))
+                    if (record.optInt("bill_id") > 0) {
+                        form.addView(secondaryButton("Open fee bill").apply {
+                            setOnClickListener { showAdminBill(record.optInt("bill_id"), record.optInt("user_id")) }
+                        })
+                    }
+                    if (record.optDouble("outstanding_amount") > 0.01) {
+                        form.addView(secondaryButton("Send STK push").apply {
+                            setOnClickListener {
+                                postAction(
+                                    "admin/onboarding_tracker.php",
+                                    JSONObject()
+                                        .put("tracker_action", "send_stk")
+                                        .put("source_type", record.optString("type"))
+                                        .put("source_id", record.optInt("record_id"))
+                                ) { loadOnboarding(q, type, status, from, to, assignee) }
+                            }
+                        })
+                    }
+                    if (record.optString("type") == "proforma" && record.optDouble("outstanding_amount") <= 0.01 &&
+                        record.optString("overall_key") != "complete"
+                    ) {
+                        form.addView(secondaryButton("Resend setup link").apply {
+                            setOnClickListener {
+                                postAction(
+                                    "admin/onboarding_tracker.php",
+                                    JSONObject()
+                                        .put("tracker_action", "resend_setup_link")
+                                        .put("proforma_id", record.optInt("record_id"))
+                                ) { loadOnboarding(q, type, status, from, to, assignee) }
+                            }
+                        })
+                    }
                 }
                 addBack(form)
                 show(form)
@@ -3787,65 +4159,71 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDemandNotices() {
         childScreen()
+        loadDemandNotices("")
+    }
+
+    private fun loadDemandNotices(status: String) {
         showLoading("Loading demand notices")
-        api.request("admin/demand_notices.php?limit=100") { result ->
+        val params = mutableMapOf("limit" to "200")
+        if (status.isNotBlank()) params["status"] = status
+        api.request(api.query("admin/demand_notices.php", params)) { result ->
             onResult(result, "Could not load demand notices") { response ->
                 val data = response.data()
-                val form = screen("Demand notices", "Overdue billing follow-up")
-                renderNode(form, "Summary", data.opt("summary"))
-                val generate = actionButton("Generate notices for overdue bills")
-                generate.setOnClickListener {
-                    setLoading(generate, true, "Generate notices for overdue bills")
-                    api.request(
-                        "admin/demand_notices.php", "POST",
-                        JSONObject().put("action", "generate")
-                    ) { r ->
-                        runOnUiThread {
-                            setLoading(generate, false, "Generate notices for overdue bills")
-                            r.onSuccess { toast(it.optString("message", "Notices generated.")); showDemandNotices() }
-                                .onFailure(::handleError)
+                val summary = data.optJSONObject("summary") ?: JSONObject()
+                val notices = data.optJSONArray("notices") ?: JSONArray()
+                val form = screen("Demand notices", if (status.isBlank()) "All statuses" else status.replaceFirstChar(Char::uppercase))
+                form.addView(heroBanner("Demand notices", "Generate and track overdue customer demand notices.", "Collections", toneAmber, R.drawable.ic_warning_triangle, true))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("Draft", summary.optInt("draft").toString(), R.drawable.ic_receipt, toneNeutral),
+                    summaryCard("Sent", summary.optInt("sent").toString(), R.drawable.ic_warning_triangle, toneAmber),
+                    summaryCard("Resolved", summary.optInt("resolved").toString(), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Acknowledged", summary.optInt("acknowledged").toString(), R.drawable.ic_circle_alert, toneBlue)
+                )))
+                form.addView(buttonRow(
+                    "All" to { childScreen(); loadDemandNotices("") },
+                    "Draft" to { childScreen(); loadDemandNotices("draft") },
+                    "Sent" to { childScreen(); loadDemandNotices("sent") },
+                    "Resolved" to { childScreen(); loadDemandNotices("resolved") },
+                    "Acknowledged" to { childScreen(); loadDemandNotices("acknowledged") }
+                ))
+                form.addView(actionButton("Generate overdue notices").apply {
+                    setOnClickListener {
+                        confirmThen("Generate demand notices for all currently overdue bills?") {
+                            postAction("admin/demand_notices.php", JSONObject().put("action", "generate")) { loadDemandNotices(status) }
                         }
                     }
-                }
-                form.addView(generate)
-                addRecordList(form, "Recent notices", data.optJSONArray("notices"), listOf("account_number", "full_name")) { row ->
-                    showDemandNoticeUpdate(row.optInt("id"), row.optString("status"))
-                }
+                })
+                form.addView(sectionPanel("Recent demand notices", "Notice number, customer, account, balances, status and generated date.") {
+                    if (notices.length() == 0) addView(empty("No demand notices yet."))
+                    for (index in 0 until notices.length()) {
+                        val notice = notices.optJSONObject(index) ?: continue
+                        val noticeId = notice.optInt("id")
+                        addView(card(
+                            notice.optString("notice_number", "Notice #$noticeId"),
+                            listOf(notice.optString("full_name"), notice.optString("account_number"), "Due ${money(notice.optDouble("amount_due"))}", "Balance ${money(notice.optDouble("balance_due"))}", notice.optString("generated_at")).filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(notice.optString("status"), toneBlue)
+                        ))
+                        addView(buttonRow(
+                            "Draft" to { updateDemandNoticeStatus(noticeId, "draft", status) },
+                            "Sent" to { updateDemandNoticeStatus(noticeId, "sent", status) },
+                            "Acknowledged" to { updateDemandNoticeStatus(noticeId, "acknowledged", status) },
+                            "Resolved" to { updateDemandNoticeStatus(noticeId, "resolved", status) },
+                            "Cancelled" to { updateDemandNoticeStatus(noticeId, "cancelled", status) }
+                        ))
+                    }
+                })
                 addBack(form)
                 show(form)
             }
         }
     }
 
-    private fun showDemandNoticeUpdate(noticeId: Int, currentStatus: String) {
-        backAction = ::showDemandNotices
-        val status = input("New status (e.g. sent, acknowledged, resolved)").apply { setText(currentStatus) }
-        val note = multilineInput("Note (optional)")
-        val save = actionButton("Update notice")
-        val form = screen("Update demand notice", "Notice #$noticeId")
-        listOf(status, note, save).forEach(form::addView)
-        addBack(form)
-        save.setOnClickListener {
-            if (status.text.isBlank()) {
-                toast("Enter a status")
-                return@setOnClickListener
-            }
-            setLoading(save, true, "Update notice")
-            api.request(
-                "admin/demand_notices.php", "POST",
-                JSONObject().put("action", "update_status").put("notice_id", noticeId)
-                    .put("status", status.text.toString().trim()).put("note", note.text.toString().trim())
-            ) { r ->
-                runOnUiThread {
-                    setLoading(save, false, "Update notice")
-                    r.onSuccess { toast(it.optString("message", "Notice updated.")); showDemandNotices() }.onFailure(::handleError)
-                }
-            }
+    private fun updateDemandNoticeStatus(noticeId: Int, nextStatus: String, currentFilter: String) {
+        confirmThen("Update this demand notice to $nextStatus?") {
+            postAction("admin/demand_notices.php", JSONObject().put("action", "mark_status").put("notice_id", noticeId).put("status", nextStatus).put("note", "")) { loadDemandNotices(currentFilter) }
         }
-        show(form)
     }
 
-    // ---------------------------------------------------------------------
     // Integration health
     // ---------------------------------------------------------------------
 
@@ -3855,7 +4233,27 @@ class MainActivity : AppCompatActivity() {
         api.request("admin/integration_health.php") { result ->
             onResult(result, "Could not load integration health") { response ->
                 val form = screen("Integration health", "Live status of SMS, M-Pesa, email and eTIMS")
-                renderNode(form, "Summary", response.data().opt("summary"))
+                form.addView(secondaryButton("Refresh diagnostics").apply {
+                    setOnClickListener { showIntegrationHealth() }
+                })
+                val summary = response.data().optJSONObject("summary") ?: JSONObject()
+                val services = summary.keys()
+                while (services.hasNext()) {
+                    val service = services.next()
+                    val item = summary.optJSONObject(service) ?: continue
+                    val lastError = item.optJSONObject("last_error") ?: JSONObject()
+                    form.addView(card(
+                        service.uppercase(Locale.getDefault()),
+                        listOf(
+                            "Configured: ${if (item.optBoolean("configured")) "Yes" else "No"}",
+                            if (item.has("pending")) "Pending: ${item.optInt("pending")}" else "",
+                            if (item.has("failed")) "Failed: ${item.optInt("failed")}" else "",
+                            "Last success: ${item.optString("last_success").ifBlank { "-" }}",
+                            "Last error: ${lastError.optString("error_message").ifBlank { "-" }}"
+                        ).filter(String::isNotBlank).joinToString("\n"),
+                        if (item.optBoolean("configured")) toneTeal else toneAmber
+                    ))
+                }
                 addBack(form)
                 show(form)
             }
@@ -3998,11 +4396,13 @@ class MainActivity : AppCompatActivity() {
                 val composer = multilineInput(if (mode == "staff") "Reply to this customer" else "Type your message")
                 val send = actionButton("Send message")
                 form.addView(composer)
-                form.addView(buttonRow(
+                val chatActions = mutableListOf<Pair<String, () -> Unit>>(
                     "Refresh" to { childScreen(); loadSupportChat(selectedThread.optInt("id")) },
                     "Close thread" to {
                         if (mode != "staff") {
                             toast("Only support staff can close threads.")
+                        } else if (selectedThread.optInt("id") <= 0) {
+                            toast("Open a thread first.")
                         } else {
                             api.request(
                                 "support_chat.php",
@@ -4016,7 +4416,22 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     }
-                ))
+                )
+                if (mode == "staff" && selectedThread.optInt("id") > 0) {
+                    chatActions += "Mark read" to {
+                        api.request(
+                            "support_chat.php",
+                            "POST",
+                            JSONObject().put("action", "mark_read").put("thread_id", selectedThread.optInt("id"))
+                        ) { r ->
+                            runOnUiThread {
+                                r.onSuccess { toast(it.optString("message", "Thread marked read.")); childScreen(); loadSupportChat(selectedThread.optInt("id")) }
+                                    .onFailure(::handleError)
+                            }
+                        }
+                    }
+                }
+                form.addView(buttonRow(*chatActions.toTypedArray()))
                 form.addView(send)
                 addBack(form)
                 send.setOnClickListener {
@@ -4284,42 +4699,47 @@ class MainActivity : AppCompatActivity() {
                     val id = inquiry.optInt("id")
                     form.addView(card(
                         "${inquiry.optString("name")} • ${inquiry.optString("status")}",
-                        "${inquiry.optString("email")} • ${inquiry.optString("phone")}\n${inquiry.optString("message")}"
+                        listOf(
+                            "${inquiry.optString("email")} • ${inquiry.optString("phone")}",
+                            inquiry.optString("message"),
+                            inquiry.optString("created_at").takeIf(String::isNotBlank)?.let { "Received: $it" },
+                            inquiry.optString("updated_at").takeIf(String::isNotBlank)?.let { "Updated: $it" },
+                            inquiry.optString("replied_at").takeIf(String::isNotBlank)?.let { "Replied: $it" },
+                            inquiry.optString("reply_subject").takeIf(String::isNotBlank)?.let { "Last reply: $it" },
+                            inquiry.optString("reply_message")
+                        ).filterNotNull().filter(String::isNotBlank).joinToString("\n"),
+                        toneForStatus(inquiry.optString("status"), toneBlue)
                     ))
                     val reply = secondaryButton("Reply by email")
                     reply.setOnClickListener { showSupportInquiryReply(id) }
                     form.addView(reply)
+                    val rowActions = mutableListOf<Pair<String, () -> Unit>>()
                     if (inquiry.optString("status") != "handled") {
-                        form.addView(buttonRow(
-                            "Mark handled" to {
+                        rowActions += "Mark handled" to {
                                 postAction(
                                     "admin/support_inquiries.php",
                                     JSONObject().put("action", "mark_handled").put("inquiry_id", id)
                                 ) { loadSupportInquiries(status) }
-                            },
-                            "Delete" to {
-                                postAction(
-                                    "admin/support_inquiries.php",
-                                    JSONObject().put("action", "delete").put("inquiry_id", id)
-                                ) { loadSupportInquiries(status) }
                             }
-                        ))
                     } else {
-                        form.addView(buttonRow(
-                            "Reopen" to {
+                        rowActions += "Reopen" to {
                                 postAction(
                                     "admin/support_inquiries.php",
                                     JSONObject().put("action", "reopen").put("inquiry_id", id)
                                 ) { loadSupportInquiries(status) }
-                            },
-                            "Delete" to {
+                            }
+                    }
+                    if (isAdminUser()) {
+                        rowActions += "Delete" to {
+                            confirmThen("Delete this inquiry?") {
                                 postAction(
                                     "admin/support_inquiries.php",
                                     JSONObject().put("action", "delete").put("inquiry_id", id)
                                 ) { loadSupportInquiries(status) }
                             }
-                        ))
+                        }
                     }
+                    if (rowActions.isNotEmpty()) form.addView(buttonRow(*rowActions.toTypedArray()))
                 }
                 addBack(form)
                 show(form)
@@ -4565,11 +4985,12 @@ class MainActivity : AppCompatActivity() {
     private fun showBlog() {
         childScreen()
         showLoading("Loading blog")
-        api.request("admin/blog.php?limit=50") { result ->
+        val endpoint = if (isStaffUser()) "admin/blog.php?limit=50" else "blog.php?limit=50"
+        api.request(endpoint) { result ->
             onResult(result, "Could not load blog") { response ->
                 val data = response.data()
-                val canWrite = data.optBoolean("can_write")
-                val form = screen("Blog management", if (canWrite) "Create and moderate posts" else "View posts and comments")
+                val canWrite = isStaffUser() && data.optBoolean("can_write")
+                val form = screen(if (isStaffUser()) "Blog management" else "News & updates", if (canWrite) "Create and moderate posts" else "Read-only customer news list")
                 if (canWrite) {
                     val newPost = actionButton("New post")
                     newPost.setOnClickListener { showBlogPostEditor(null) }
@@ -4585,6 +5006,10 @@ class MainActivity : AppCompatActivity() {
                         row.isClickable = true
                         row.isFocusable = true
                         row.setOnClickListener { showBlogPostEditor(post) }
+                    } else if (post.optString("slug").isNotBlank()) {
+                        row.isClickable = true
+                        row.isFocusable = true
+                        row.setOnClickListener { showBlogPost(post.optString("slug")) }
                     }
                     form.addView(row)
                     if (canWrite) {
@@ -4596,13 +5021,14 @@ class MainActivity : AppCompatActivity() {
                         form.addView(delete)
                     }
                 }
-                val comments = data.optJSONArray("pending_comments") ?: JSONArray()
-                form.addView(sectionTitle("Pending comments (${comments.length()})"))
-                if (comments.length() == 0) form.addView(empty("No pending comments."))
-                for (index in 0 until comments.length()) {
-                    val comment = comments.optJSONObject(index) ?: continue
-                    form.addView(card(comment.optString("author_name", "Comment"), comment.optString("comment_text", comment.optString("body"))))
-                    if (canWrite) {
+                if (isStaffUser()) {
+                    val comments = data.optJSONArray("pending_comments") ?: JSONArray()
+                    form.addView(sectionTitle("Pending comments (${comments.length()})"))
+                    if (comments.length() == 0) form.addView(empty("No pending comments."))
+                    for (index in 0 until comments.length()) {
+                        val comment = comments.optJSONObject(index) ?: continue
+                        form.addView(card(comment.optString("author_name", "Comment"), comment.optString("comment_text", comment.optString("body"))))
+                        if (canWrite) {
                         val id = comment.optInt("id")
                         form.addView(buttonRow(
                             "Approve" to {
@@ -4615,8 +5041,29 @@ class MainActivity : AppCompatActivity() {
                                 postAction("admin/blog.php", JSONObject().put("action", "delete_comment").put("comment_id", id)) { showBlog() }
                             }
                         ))
+                        }
                     }
                 }
+                addBack(form)
+                show(form)
+            }
+        }
+    }
+
+    private fun showBlogPost(slug: String) {
+        backAction = ::showBlog
+        showLoading("Loading news post")
+        api.request(api.query("blog.php", mapOf("post" to slug))) { result ->
+            onResult(result, "Could not load news post") { response ->
+                val data = response.data()
+                val post = data.optJSONObject("post") ?: JSONObject()
+                val comments = data.optJSONArray("comments") ?: JSONArray()
+                val attachments = data.optJSONArray("attachments") ?: JSONArray()
+                val form = screen(post.optString("title", "News"), post.optString("published_at"))
+                form.addView(heroBanner(post.optString("title", "News"), post.optString("excerpt"), "News & updates", toneBlue, R.drawable.ic_receipt, true))
+                form.addView(card(post.optString("author_name", "Staff"), post.optString("body")))
+                addRecordList(form, "Attachments", attachments, listOf("file_name", "file_type", "file_size"))
+                addRecordList(form, "Comments", comments, listOf("user_name", "guest_name", "body"))
                 addBack(form)
                 show(form)
             }
@@ -4665,8 +5112,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAccountingOverview() {
         childScreen()
+        loadAccountingOverview("", today().take(8) + "01", today())
+    }
+
+    private fun loadAccountingOverview(accountType: String, reconFrom: String, reconTo: String) {
         showLoading("Loading accounting overview")
-        api.request("admin/accounting_overview.php") { result ->
+        val params = mutableMapOf<String, String>()
+        if (accountType.isNotBlank()) params["type"] = accountType
+        params["recon_from"] = reconFrom
+        params["recon_to"] = reconTo
+        val path = api.query("admin/accounting_overview.php", params)
+        api.request(path) { result ->
             onResult(result, "Could not load accounting overview") { response ->
                 val data = response.data()
                 val form = screen("Accounting overview", "Chart of accounts, trial balance and reconciliation")
@@ -4686,6 +5142,12 @@ class MainActivity : AppCompatActivity() {
                     Triple("Open ledger", R.drawable.ic_wallet) { showAccountingLedger() },
                     Triple("Lock period", R.drawable.ic_circle_alert) { showPeriodLockForm() }
                 )))
+                form.addView(sectionTitle("Account filter"))
+                val typePicker = dropdownInput("Account type", accountTypeOptions(), data.optString("selected_type", accountType))
+                form.addView(typePicker)
+                form.addView(secondaryButton("Apply filter").apply {
+                    setOnClickListener { loadAccountingOverview(typePicker.tag?.toString().orEmpty(), reconFrom, reconTo) }
+                })
                 form.addView(sectionTitle("Account management"))
                 val newAccount = actionButton("New account")
                 newAccount.setOnClickListener { showAccountEditor(null, accounts) }
@@ -4715,6 +5177,16 @@ class MainActivity : AppCompatActivity() {
                 val periodForm = actionButton("Lock / unlock accounting period")
                 periodForm.setOnClickListener { showPeriodLockForm() }
                 form.addView(periodForm)
+                form.addView(sectionTitle("Reconciliation date range"))
+                val fromInput = datePickerInput("From", data.optString("recon_from", reconFrom))
+                val toInput = datePickerInput("To", data.optString("recon_to", reconTo))
+                form.addView(fromInput)
+                form.addView(toInput)
+                form.addView(secondaryButton("Refresh reconciliation").apply {
+                    setOnClickListener {
+                        loadAccountingOverview(typePicker.tag?.toString().orEmpty(), fromInput.text.toString().trim(), toInput.text.toString().trim())
+                    }
+                })
                 show(form)
             }
         }
@@ -4822,10 +5294,11 @@ class MainActivity : AppCompatActivity() {
         val debitAccountId = dropdownInput("Debit account", accountOptions, accountOptions.firstOrNull()?.first.orEmpty())
         val creditAccountId = dropdownInput("Credit account", accountOptions, accountOptions.getOrNull(1)?.first ?: accountOptions.firstOrNull()?.first.orEmpty())
         val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val referenceType = input("Reference type (optional)").apply { setText(R.string.journal_reference_manual) }
+        val referenceType = input("Reference type (optional)").apply { setText(R.string.default_reference_type) }
+        val referenceId = input("Reference ID (optional)", InputType.TYPE_CLASS_NUMBER)
         val post = actionButton("Post journal entry")
         val form = screen("Post journal entry", "Choose accounts by name. Debits must equal credits.")
-        listOf(entryDate, memo, debitAccountId, creditAccountId, amount, referenceType, post).forEach(form::addView)
+        listOf(entryDate, referenceType, referenceId, amount, memo, debitAccountId, creditAccountId, post).forEach(form::addView)
         post.setOnClickListener {
             val debitId = debitAccountId.tag?.toString()?.toIntOrNull() ?: 0
             val creditId = creditAccountId.tag?.toString()?.toIntOrNull() ?: 0
@@ -4843,6 +5316,7 @@ class MainActivity : AppCompatActivity() {
                     .put("credit_account_id", creditId)
                     .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("reference_type", referenceType.text.toString().trim())
+                    .put("reference_id", referenceId.text.toString().toIntOrNull() ?: 0)
             ) { r ->
                 runOnUiThread {
                     setLoading(post, false, "Post journal entry")
@@ -4855,8 +5329,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPeriodLockForm() {
         backAction = ::showAccountingOverview
-        val periodKey = input("Period key (e.g. 2026-09)")
-        val note = multilineInput("Note (optional)")
+        val periodKey = datePickerInput("Period (YYYY-MM)", today().take(7), "month")
+        val note = input("Note (optional)")
         val lock = actionButton("Lock period")
         val unlock = secondaryButton("Unlock period")
         val form = screen("Lock / unlock period", "")
@@ -4890,24 +5364,40 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAccountingReports() {
         childScreen()
+        loadAccountingReports(today().take(4) + "-01-01", today())
+    }
+
+    private fun loadAccountingReports(reconFrom: String, reconTo: String) {
         showLoading("Loading accounting reports")
-        api.request("admin/accounting_reports.php") { result ->
+        api.request(api.query("admin/accounting_reports.php", mapOf("recon_from" to reconFrom, "recon_to" to reconTo))) { result ->
             onResult(result, "Could not load accounting reports") { response ->
                 val data = response.data()
+                val fromValue = data.optString("recon_from", reconFrom)
+                val toValue = data.optString("recon_to", reconTo)
                 val form = screen("Accounting reports", "Balance sheet, P&L, cash flow and AR aging")
                 form.addView(heroBanner(
                     title = "Financial reports",
-                    message = "Review statements and receivables in a structured finance view instead of raw text output.",
+                    message = "Review statements and receivables for $fromValue – $toValue.",
                     eyebrow = "Reporting",
                     tone = toneTeal,
                     iconRes = R.drawable.ic_wallet,
                     compact = true
                 ))
+                form.addView(sectionTitle("Date filters"))
+                val fromInput = datePickerInput("From", fromValue)
+                val toInput = datePickerInput("To", toValue)
+                form.addView(fromInput)
+                form.addView(toInput)
+                form.addView(secondaryButton("Load reports").apply {
+                    setOnClickListener {
+                        loadAccountingReports(fromInput.text.toString().trim(), toInput.text.toString().trim())
+                    }
+                })
                 form.addView(sectionTitle("Financial statements"))
-                renderFinanceNode(form, "Balance sheet", data.opt("balance_sheet"))
-                renderFinanceNode(form, "Profit and loss", data.opt("profit_and_loss"))
+                renderFinanceNode(form, "Balance sheet (as at $toValue)", data.opt("balance_sheet"))
+                renderFinanceNode(form, "Profit and loss ($fromValue – $toValue)", data.opt("profit_and_loss"))
                 form.addView(sectionTitle("Cash & receivables"))
-                renderFinanceNode(form, "Cash flow", data.opt("cash_flow"))
+                renderFinanceNode(form, "Cash flow ($fromValue – $toValue)", data.opt("cash_flow"))
                 renderFinanceNode(form, "Accounts receivable aging", data.opt("accounts_receivable_aging"))
                 addBack(form)
                 show(form)
@@ -5059,8 +5549,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAccountingBudget() {
         childScreen()
+        loadAccountingBudget(today().take(4))
+    }
+
+    private fun loadAccountingBudget(budgetYear: String) {
         showLoading("Loading accounting budget")
-        api.request("admin/accounting_budget.php") { result ->
+        api.request(api.query("admin/accounting_budget.php", mapOf("budget_year" to budgetYear))) { result ->
             onResult(result, "Could not load accounting budget") { response ->
                 val data = response.data()
                 val form = screen("Accounting budget", "Budget year: ${data.optString("budget_year")}")
@@ -5078,6 +5572,12 @@ class MainActivity : AppCompatActivity() {
                     iconRes = R.drawable.ic_wallet,
                     compact = true
                 ))
+                form.addView(sectionTitle("Financial year"))
+                val yearFilter = input("Financial year (e.g. 2026)", InputType.TYPE_CLASS_NUMBER).apply { setText(data.optString("budget_year")) }
+                form.addView(yearFilter)
+                form.addView(secondaryButton("Load year").apply {
+                    setOnClickListener { loadAccountingBudget(yearFilter.text.toString().trim().ifBlank { today().take(4) }) }
+                })
                 if (budgetRows.length() > 0) {
                     form.addView(summaryCardGrid(listOf(
                         summaryCard("Budget total", money(totalBudget), R.drawable.ic_wallet, toneBlue),
@@ -5092,10 +5592,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 form.addView(sectionTitle("Budget performance"))
                 renderBudgetVsActual(form, budgetRows)
-                form.addView(sectionTitle("Set a yearly budget"))
+                form.addView(sectionTitle("Create / edit budget lines"))
                 if (accountChoices.isEmpty()) {
                     form.addView(empty("No active accounts are available for budgeting yet."))
                 } else {
+                    form.addView(buttonRow(
+                        "Monthly budget" to { showBudgetEntryForm("monthly", accounts, data.optString("budget_year")) },
+                        "Quarterly budget" to { showBudgetEntryForm("quarterly", accounts, data.optString("budget_year")) }
+                    ))
+                    form.addView(sectionTitle("Set a yearly budget"))
                     val accountId = dropdownInput(
                         "Budget account",
                         accountChoices,
@@ -5103,8 +5608,12 @@ class MainActivity : AppCompatActivity() {
                     )
                     val year = input("Financial year (e.g. 2026)").apply { setText(data.optString("budget_year")) }
                     val yearlyBudget = input("Yearly budget amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+                    val yearlyWholeNumbers = CheckBox(this).apply {
+                        text = getString(R.string.whole_numbers)
+                        setTextColor(textPrimary)
+                    }
                     val save = actionButton("Save budget")
-                    listOf(accountId, year, yearlyBudget).forEach(form::addView)
+                    listOf(accountId, year, yearlyBudget, yearlyWholeNumbers).forEach(form::addView)
                     form.addView(save)
                     save.setOnClickListener {
                         val selectedAccountId = accountId.tag?.toString()?.toIntOrNull() ?: 0
@@ -5119,12 +5628,12 @@ class MainActivity : AppCompatActivity() {
                                 .put("budget_account_id", selectedAccountId)
                                 .put("financial_year", year.text.toString().trim())
                                 .put("budget_mode", "yearly")
-                                .put("eliminate_decimals", false)
+                                .put("eliminate_decimals", yearlyWholeNumbers.isChecked)
                                 .put("yearly_budget", yearlyBudget.text.toString().toDoubleOrNull() ?: 0.0)
                         ) { r ->
                             runOnUiThread {
                                 setLoading(save, false, "Save budget")
-                                r.onSuccess { toast(it.optString("message", "Budget saved.")); showAccountingBudget() }.onFailure(::handleError)
+                                r.onSuccess { toast(it.optString("message", "Budget saved.")); loadAccountingBudget(year.text.toString().trim()) }.onFailure(::handleError)
                             }
                         }
                     }
@@ -5134,6 +5643,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showBudgetEntryForm(mode: String, accounts: JSONArray, budgetYear: String) {
+        backAction = { loadAccountingBudget(budgetYear) }
+        val accountChoices = accountOptions(accounts)
+        val accountId = dropdownInput("Budget account", accountChoices, accountChoices.firstOrNull()?.first.orEmpty())
+        val wholeNumbers = CheckBox(this).apply {
+            text = getString(R.string.whole_numbers)
+            setTextColor(textPrimary)
+        }
+        val labels = if (mode == "quarterly") listOf("Q1", "Q2", "Q3", "Q4") else listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val amountInputs = labels.map { label ->
+            input(label, InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText("0") }
+        }
+        val save = actionButton("Save ${mode.replaceFirstChar(Char::uppercase)} budget")
+        val form = screen("${mode.replaceFirstChar(Char::uppercase)} budget", "Financial year $budgetYear")
+        form.addView(accountId)
+        if (mode == "quarterly") form.addView(wholeNumbers)
+        amountInputs.forEach(form::addView)
+        form.addView(save)
+        save.setOnClickListener {
+            val selectedAccountId = accountId.tag?.toString()?.toIntOrNull() ?: 0
+            if (selectedAccountId == 0) {
+                toast("Choose a budget account.")
+                return@setOnClickListener
+            }
+            val body = JSONObject()
+                .put("action", "save_budget")
+                .put("budget_account_id", selectedAccountId)
+                .put("financial_year", budgetYear)
+                .put("budget_mode", mode)
+                .put("eliminate_decimals", wholeNumbers.isChecked)
+            val values = JSONObject()
+            amountInputs.forEachIndexed { index, field -> values.put((index + 1).toString(), field.text.toString().toDoubleOrNull() ?: 0.0) }
+            body.put(if (mode == "quarterly") "quarters" else "months", values)
+            setLoading(save, true, "Save budget")
+            api.request("admin/accounting_budget.php", "POST", body) { r ->
+                runOnUiThread {
+                    setLoading(save, false, "Save budget")
+                    r.onSuccess { toast(it.optString("message", "Budget saved.")); loadAccountingBudget(budgetYear) }.onFailure(::handleError)
+                }
+            }
+        }
+        show(form)
+    }
     // ---------------------------------------------------------------------
     // Accounting transfers
     // ---------------------------------------------------------------------
@@ -5146,10 +5698,10 @@ class MainActivity : AppCompatActivity() {
                 val data = response.data()
                 val form = screen("Accounting transfers", "Move funds between accounts")
                 val accounts = data.optJSONArray("accounts") ?: JSONArray()
-                val accountChoices = accountOptions(accounts)
+                val accountChoices = accountOptions(accounts, includeInactive = true)
                 form.addView(heroBanner(
                     title = "Account transfers",
-                    message = "Move funds between active accounts without leaving the mobile workspace.",
+                    message = "Move funds between accounts with automatic double-entry posting.",
                     eyebrow = "Treasury",
                     tone = toneTeal,
                     iconRes = R.drawable.ic_wallet,
@@ -5253,22 +5805,59 @@ class MainActivity : AppCompatActivity() {
                 create.setOnClickListener { showCustomerCreateForm(registrationFee, data) }
                 form.addView(sectionPanel(
                     title = "Customers (${users.length()})",
-                    description = "Open a customer record to edit details, meters and account status."
+                    description = "Account No, client name, phone, meter, status, role and the same row actions as the web table."
                 ) {
-                    addView(create)
+                    if (isAdminUser()) addView(create)
                     if (users.length() == 0) addView(empty("No customers found."))
                     for (index in 0 until users.length()) {
                         val user = users.optJSONObject(index) ?: continue
                         val row = card(
-                            "${user.optString("full_name")} • ${user.optString("account_number")}",
-                            "${user.optString("status")} • ${user.optString("phone_number")}\nMeters: ${user.optString("meter_numbers")}",
+                            "${user.optString("account_number")} • ${user.optString("full_name")}",
+                            listOf(
+                                "Phone: ${user.optString("phone_number")}",
+                                "Meter(s): ${user.optString("meter_numbers").ifBlank { user.optString("meter_number") }}",
+                                "Status: ${user.optString("status")}",
+                                "Role: ${user.optString("role").ifBlank { "customer" }}"
+                            ).joinToString("\n"),
                             toneForStatus(user.optString("status"), toneBlue)
                         )
                         row.isClickable = true
                         row.isFocusable = true
                         val id = user.optInt("id")
-                        row.setOnClickListener { showCustomerEditForm(id, registrationFee) }
+                        row.setOnClickListener { if (isAdminUser()) showCustomerEditForm(id, registrationFee) else showAdminCustomer(id) }
                         addView(row)
+                        addView(buttonRow(
+                            "Open" to { showAdminCustomer(id) },
+                            "Map" to {
+                                val lat = user.optString("latitude")
+                                val lng = user.optString("longitude")
+                                if (lat.isNotBlank() && lng.isNotBlank()) {
+                                    openCustomerMap(lat, lng, user.optString("full_name"))
+                                } else {
+                                    toast("No GPS pin is recorded for this customer.")
+                                }
+                            }
+                        ))
+                        if (isAdminUser()) {
+                            addView(buttonRow("Edit" to { showCustomerEditForm(id, registrationFee) }))
+                            if (user.optString("status") != "active" && registrationFee > 0.0) {
+                                addView(buttonRow("Retry Payment" to {
+                                    postAction("admin/users.php", JSONObject().put("form_type", "resend_registration_stk").put("user_id", id)) { showCustomerManagement() }
+                                }))
+                            }
+                            addView(buttonRow(
+                                "Activate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", id).put("new_status", "active")) { showCustomerManagement() } },
+                                "Deactivate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", id).put("new_status", "inactive")) { showCustomerManagement() } },
+                                "Suspend" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", id).put("new_status", "suspended")) { showCustomerManagement() } }
+                            ))
+                            val delete = destructiveButton("Delete ${user.optString("account_number")}")
+                            delete.setOnClickListener {
+                                confirmThen("Delete ${user.optString("full_name")}? This cannot be undone.") {
+                                    postAction("admin/users.php", JSONObject().put("form_type", "delete_user").put("user_id", id)) { showCustomerManagement() }
+                                }
+                            }
+                            addView(delete)
+                        }
                     }
                 })
                 addBack(form)
@@ -5286,6 +5875,11 @@ class MainActivity : AppCompatActivity() {
             "connection_type_options",
             listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
         )
+        val customerTypeOptions = formMetaOptions(
+            formMetadata,
+            "customer_type_options",
+            listOf("individual" to "Individual", "company" to "Company")
+        )
         val firstName = input("First name")
         val middleName = input("Middle name (optional)")
         val lastName = input("Last name")
@@ -5295,6 +5889,13 @@ class MainActivity : AppCompatActivity() {
         val idNumber = input("ID number")
         val address = input("Address")
         val taxPin = input("Tax PIN (optional)")
+        val customerType = dropdownInput("Customer type", customerTypeOptions, "individual")
+        val companyName = input("Company name (if company)")
+        val contactPerson = input("Contact person (if company)")
+        val companyRegistration = input("Company registration no. (optional)")
+        val locationLabel = input("Location / landmark (optional)")
+        val latitude = input("Latitude (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED)
+        val longitude = input("Longitude (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED)
         val connectionType = dropdownInput("Connection type", connectionOptions, "domestic")
         val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val password = input("Temporary password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
@@ -5326,7 +5927,13 @@ class MainActivity : AppCompatActivity() {
             title = "Identity and contact",
             description = "Capture the core customer record first, similar to the web customer registration flow."
         ) {
-            listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin).forEach(this::addView)
+            listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin, customerType, companyName, contactPerson, companyRegistration).forEach(this::addView)
+        })
+        form.addView(sectionPanel(
+            title = "Location pin",
+            description = "Optional location details used by the customer map. Paste GPS coordinates if already known."
+        ) {
+            listOf(locationLabel, latitude, longitude).forEach(this::addView)
         })
         form.addView(sectionPanel(
             title = "Service setup",
@@ -5359,6 +5966,13 @@ class MainActivity : AppCompatActivity() {
                 .put("id_number", idNumber.text.toString().trim())
                 .put("address", address.text.toString().trim())
                 .put("tax_pin", taxPin.text.toString().trim())
+                .put("customer_type", customerType.tag?.toString().orEmpty())
+                .put("company_name", companyName.text.toString().trim())
+                .put("contact_person_name", contactPerson.text.toString().trim())
+                .put("company_registration_number", companyRegistration.text.toString().trim())
+                .put("location_label", locationLabel.text.toString().trim())
+                .put("latitude", latitude.text.toString().trim())
+                .put("longitude", longitude.text.toString().trim())
                 .put("connection_type", connectionType.tag?.toString().orEmpty())
                 .put("unit_rate", unitRate.text.toString().trim())
                 .put("password", password.text.toString())
@@ -5390,6 +6004,11 @@ class MainActivity : AppCompatActivity() {
                     "connection_type_options",
                     listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
                 )
+                val customerTypeOptions = formMetaOptions(
+                    formMetadata,
+                    "customer_type_options",
+                    listOf("individual" to "Individual", "company" to "Company")
+                )
                 val user = data.optJSONObject("edit_user") ?: JSONObject()
                 val nameParts = user.optString("full_name").trim().split(Regex("\\s+")).filter(String::isNotBlank)
                 val (selectedPhoneCode, localPhone) = splitPhoneNumberForForm(
@@ -5408,6 +6027,10 @@ class MainActivity : AppCompatActivity() {
                 val idNumber = input("ID number").apply { setText(user.optString("id_number")) }
                 val address = input("Address").apply { setText(user.optString("address")) }
                 val taxPin = input("Tax PIN (optional)").apply { setText(user.optString("tax_pin")) }
+                val customerType = dropdownInput("Customer type", customerTypeOptions, user.optString("customer_type").ifBlank { "individual" })
+                val companyName = input("Company name (if company)").apply { setText(user.optString("company_name")) }
+                val contactPerson = input("Contact person (if company)").apply { setText(user.optString("contact_person_name")) }
+                val companyRegistration = input("Company registration no. (optional)").apply { setText(user.optString("company_registration_number")) }
                 val meterNumber = input("Primary meter number").apply { setText(user.optString("meter_number")) }
                 val connectionType = dropdownInput("Connection type", connectionOptions, user.optString("connection_type").ifBlank { "domestic" })
                 val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply {
@@ -5440,13 +6063,20 @@ class MainActivity : AppCompatActivity() {
                     title = "Identity and contact",
                     description = "Edit personal and communication details for this account."
                 ) {
-                    listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin).forEach(this::addView)
+                    listOf(firstName, middleName, lastName, phoneCode, phoneLocal, email, idNumber, address, taxPin, customerType, companyName, contactPerson, companyRegistration).forEach(this::addView)
                 })
                 form.addView(sectionPanel(
                     title = "Service settings",
                     description = "Primary meter, connection type, pricing override, and location metadata."
                 ) {
                     listOf(meterNumber, connectionType, unitRate, locationLabel, latitude, longitude, newPassword, save).forEach(this::addView)
+                    val lat = user.optString("latitude")
+                    val lng = user.optString("longitude")
+                    if (lat.isNotBlank() && lng.isNotBlank()) {
+                        addView(secondaryButton("Open current pin in Maps").apply {
+                            setOnClickListener { openCustomerMap(lat, lng, user.optString("full_name")) }
+                        })
+                    }
                 })
                 addBack(form)
                 form.addView(sectionPanel(
@@ -5455,6 +6085,7 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     addView(buttonRow(
                         "Activate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "active")) { showCustomerManagement() } },
+                        "Deactivate" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "inactive")) { showCustomerManagement() } },
                         "Suspend" to { postAction("admin/users.php", JSONObject().put("form_type", "update_status").put("user_id", userId).put("new_status", "suspended")) { showCustomerManagement() } }
                     ))
                 })
@@ -5512,7 +6143,7 @@ class MainActivity : AppCompatActivity() {
                         listOf("replacement_meter_number", "meter_number", "old_meter_number")
                     )
                 })
-                if (user.optString("status") != "active") {
+                if (user.optString("status") != "active" && registrationFee > 0.0) {
                     val resendStk = secondaryButton("Resend registration STK push")
                     resendStk.setOnClickListener {
                         postAction("admin/users.php", JSONObject().put("form_type", "resend_registration_stk").put("user_id", userId)) {
@@ -5556,6 +6187,10 @@ class MainActivity : AppCompatActivity() {
                         .put("id_number", idNumber.text.toString().trim())
                         .put("address", address.text.toString().trim())
                         .put("tax_pin", taxPin.text.toString().trim())
+                        .put("customer_type", customerType.tag?.toString().orEmpty())
+                        .put("company_name", companyName.text.toString().trim())
+                        .put("contact_person_name", contactPerson.text.toString().trim())
+                        .put("company_registration_number", companyRegistration.text.toString().trim())
                         .put("meter_number", meterNumber.text.toString().trim())
                         .put("connection_type", connectionType.tag?.toString().orEmpty())
                         .put("unit_rate", unitRate.text.toString().trim())
@@ -5865,15 +6500,42 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------------
 
     private fun showCustomerLocations() {
+        loadCustomerLocations("")
+    }
+
+    private fun loadCustomerLocations(query: String) {
         childScreen()
         showLoading("Loading customer locations")
         api.request("admin/customer_locations.php") { result ->
             onResult(result, "Could not load customer locations") { response ->
                 val pins = response.data().optJSONArray("pins") ?: JSONArray()
-                val form = screen("Customer locations", "${pins.length()} pinned location(s)")
-                if (pins.length() == 0) form.addView(empty("No customer GPS locations recorded."))
+                val filtered = JSONArray()
+                val needle = query.lowercase(Locale.ROOT)
                 for (index in 0 until pins.length()) {
                     val pin = pins.optJSONObject(index) ?: continue
+                    val haystack = listOf(
+                        pin.optString("account_number"),
+                        pin.optString("full_name"),
+                        pin.optString("phone_number"),
+                        pin.optString("address"),
+                        pin.optString("location_label")
+                    ).joinToString(" ").lowercase(Locale.ROOT)
+                    if (needle.isBlank() || haystack.contains(needle)) filtered.put(pin)
+                }
+                val form = screen("Customer locations", "${filtered.length()} of ${pins.length()} pinned location(s)")
+                val search = input("Find by account, name, phone or location").apply { setText(query) }
+                val apply = actionButton("Search pins")
+                form.addView(sectionPanel(
+                    title = "Pinned customer locations",
+                    description = "Search the same pinned account list shown on the web map. Open any pin in your map app."
+                ) {
+                    addView(search)
+                    addView(apply)
+                })
+                apply.setOnClickListener { loadCustomerLocations(search.text.toString().trim()) }
+                if (filtered.length() == 0) form.addView(empty(if (query.isBlank()) "No customer GPS locations recorded." else "No pinned customer matched that search."))
+                for (index in 0 until filtered.length()) {
+                    val pin = filtered.optJSONObject(index) ?: continue
                     form.addView(card(
                         "${pin.optString("full_name")} • ${pin.optString("account_number")}",
                         "${pin.optString("location_label")}\n${pin.optString("address")} • ${pin.optString("status")}"
@@ -5882,19 +6544,21 @@ class MainActivity : AppCompatActivity() {
                     val lng = pin.optString("longitude")
                     if (lat.isNotBlank() && lng.isNotBlank()) {
                         val openMap = secondaryButton("Open in Maps")
-                        openMap.setOnClickListener {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, "geo:$lat,$lng?q=$lat,$lng(${Uri.encode(pin.optString("full_name"))})".toUri()))
-                            } catch (_: Exception) {
-                                toast("No map app is available.")
-                            }
-                        }
+                        openMap.setOnClickListener { openCustomerMap(lat, lng, pin.optString("full_name")) }
                         form.addView(openMap)
                     }
                 }
                 addBack(form)
                 show(form)
             }
+        }
+    }
+
+    private fun openCustomerMap(latitude: String, longitude: String, label: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, "geo:$latitude,$longitude?q=$latitude,$longitude(${Uri.encode(label)})".toUri()))
+        } catch (_: Exception) {
+            toast("No map app is available.")
         }
     }
 
@@ -5920,8 +6584,29 @@ class MainActivity : AppCompatActivity() {
                 val supportPhone = input("Support phone").apply { setText(settings.optString("support_phone")) }
                 val supportEmail = input("Support email").apply { setText(settings.optString("support_email")) }
                 val currencyCode = input("Currency code").apply { setText(settings.optString("currency_code").takeIf(String::isNotBlank) ?: "KES") }
+                val localeCode = input("Locale").apply { setText(settings.optString("locale_code").takeIf(String::isNotBlank) ?: "en-KE") }
+                val timezoneName = input("Timezone").apply { setText(settings.optString("timezone_name").takeIf(String::isNotBlank) ?: "Africa/Nairobi") }
+                val fyStart = dropdownInput(
+                    "Financial year starts",
+                    listOf("1" to "January", "2" to "February", "3" to "March", "4" to "April", "5" to "May", "6" to "June", "7" to "July", "8" to "August", "9" to "September", "10" to "October", "11" to "November", "12" to "December"),
+                    settings.optInt("financial_year_start_month", 1).toString()
+                )
                 val registrationFee = input("Registration fee", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply {
                     setText(settings.optString("registration_fee"))
+                }
+                val companyPin = input("Company PIN").apply { setText(settings.optString("company_pin")) }
+                val etimsUrl = input("eTIMS integration URL").apply { setText(settings.optString("etims_integration_url")) }
+                val etimsKey = input("eTIMS API key").apply { setText(settings.optString("etims_api_key")) }
+                val vatRate = input("VAT rate %", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(settings.optString("vat_rate")) }
+                val taxCode = dropdownInput(
+                    "Taxation type code",
+                    listOf("" to "Auto", "A" to "A – Zero-rated / Exempt", "B" to "B – Standard VAT"),
+                    settings.optString("etims_taxation_type_code")
+                )
+                val enforceGps = CheckBox(this).apply {
+                    text = getString(R.string.require_accurate_gps)
+                    isChecked = settings.optBoolean("enforce_location_accuracy")
+                    setTextColor(textPrimary)
                 }
                 val requireApiKey = CheckBox(this).apply {
                     text = getString(R.string.require_mobile_api_key)
@@ -5929,17 +6614,37 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(textPrimary)
                 }
                 val save = actionButton("Save settings")
-                listOf(rate, service, companyName, supportPhone, supportEmail, currencyCode, registrationFee, requireApiKey, save).forEach(form::addView)
+                form.addView(sectionPanel("Company & contact", "Shown on receipts, notifications and customer-facing pages.") {
+                    listOf(companyName, supportPhone, supportEmail).forEach(::addView)
+                })
+                form.addView(sectionPanel("Billing rates", "Base billing values used when creating charges.") {
+                    listOf(rate, service, registrationFee).forEach(::addView)
+                })
+                form.addView(sectionPanel("Locale & system", "Currency, locale, timezone, financial year and GPS enforcement.") {
+                    listOf(currencyCode, localeCode, timezoneName, fyStart, enforceGps).forEach(::addView)
+                })
+                form.addView(sectionPanel("eTIMS, tax and mobile API", "Integration URL, credentials, VAT tax code and API-key enforcement.") {
+                    listOf(companyPin, etimsUrl, etimsKey, vatRate, taxCode, requireApiKey, save).forEach(::addView)
+                })
                 addBack(form)
                 save.setOnClickListener {
                     val body = JSONObject().put("action", "update_settings")
                         .put("rate_per_unit", rate.text.toString().toDoubleOrNull() ?: 0.0)
                         .put("service_charge", service.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("company_pin", companyPin.text.toString().trim())
+                        .put("etims_integration_url", etimsUrl.text.toString().trim())
+                        .put("etims_api_key", etimsKey.text.toString().trim())
                         .put("company_name", companyName.text.toString().trim())
                         .put("support_phone", supportPhone.text.toString().trim())
                         .put("support_email", supportEmail.text.toString().trim())
                         .put("currency_code", currencyCode.text.toString().trim().uppercase())
+                        .put("locale_code", localeCode.text.toString().trim())
+                        .put("timezone_name", timezoneName.text.toString().trim())
+                        .put("financial_year_start_month", fyStart.tag?.toString()?.toIntOrNull() ?: 1)
+                        .put("vat_rate", vatRate.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("etims_taxation_type_code", taxCode.tag?.toString().orEmpty())
                         .put("registration_fee", registrationFee.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("enforce_location_accuracy", enforceGps.isChecked)
                         .put("mobile_api_key_required", requireApiKey.isChecked)
                     setLoading(save, true, "Save settings")
                     api.request("admin/settings.php", "POST", body) { r ->
@@ -5956,8 +6661,22 @@ class MainActivity : AppCompatActivity() {
                     val plan = tariffPlans.optJSONObject(index) ?: continue
                     val planId = plan.optInt("id")
                     val isActive = plan.optBoolean("is_active")
-                    form.addView(card(plan.optString("name"), "${plan.optString("category")} • active=$isActive\nRate ${plan.optString("base_rate_per_unit")}"))
+                    val planCard = card(
+                        plan.optString("name"),
+                        listOf(
+                            plan.optString("category"),
+                            "${plan.optString("effective_from")} to ${plan.optString("effective_to").ifBlank { "onward" }}",
+                            "VAT ${plan.optString("vat_rate")}%",
+                            if (isActive) "Active" else "Inactive",
+                            "Rate ${plan.optString("base_rate_per_unit")}"
+                        ).joinToString(" • ")
+                    )
+                    planCard.isClickable = true
+                    planCard.isFocusable = true
+                    planCard.setOnClickListener { showTariffPlanEditor(plan) }
+                    form.addView(planCard)
                     form.addView(buttonRow(
+                        "Edit" to { showTariffPlanEditor(plan) },
                         (if (isActive) "Deactivate" else "Activate") to {
                             postAction("admin/settings.php", JSONObject().put("action", "toggle_tariff_plan").put("tariff_plan_id", planId).put("is_active", !isActive)) { showSettings() }
                         },
@@ -5967,48 +6686,62 @@ class MainActivity : AppCompatActivity() {
                     ))
                 }
                 val newTariff = actionButton("New tariff plan")
-                newTariff.setOnClickListener { showTariffPlanEditor() }
+                newTariff.setOnClickListener { showTariffPlanEditor(null) }
                 form.addView(newTariff)
                 show(form)
             }
         }
     }
 
-    private fun showTariffPlanEditor() {
+    private fun showTariffPlanEditor(plan: JSONObject? = null) {
         backAction = ::showSettings
+        val isNew = plan == null
         val categoryOptions = listOf(
             "all" to "All connections",
             "domestic" to "Domestic",
             "commercial" to "Commercial",
             "industrial" to "Industrial"
         )
-        val name = input("Tariff name")
-        val category = dropdownInput("Tariff category", categoryOptions, "all")
-        val effectiveFrom = datePickerInput("Effective from", today())
-        val baseRate = input("Base rate per unit", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val serviceCharge = input("Service charge", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val vatRate = input("VAT rate %", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val active = CheckBox(this).apply { text = getString(R.string.active_label); isChecked = true; setTextColor(textPrimary) }
+        val name = input("Tariff name").apply { setText(plan?.optString("name").orEmpty()) }
+        val category = dropdownInput("Tariff category", categoryOptions, plan?.optString("category").orEmpty().ifBlank { "all" })
+        val effectiveFrom = datePickerInput("Effective from", plan?.optString("effective_from").orEmpty().ifBlank { today() })
+        val effectiveTo = datePickerInput("Effective to (optional)", plan?.optString("effective_to").orEmpty())
+        val baseRate = input("Base rate per unit", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(plan?.optString("base_rate_per_unit").orEmpty()) }
+        val serviceCharge = input("Service charge", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(plan?.optString("service_charge").orEmpty()) }
+        val vatRate = input("VAT rate %", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply { setText(plan?.optString("vat_rate").orEmpty()) }
+        val blockFrom = input("Block from unit (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val blockTo = input("Block to unit (blank = open)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val blockRate = input("Block rate per unit (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val active = CheckBox(this).apply { text = getString(R.string.active_label); isChecked = plan?.optBoolean("is_active") ?: true; setTextColor(textPrimary) }
         val save = actionButton("Save tariff plan")
-        val form = screen("New tariff plan", "")
-        listOf(name, category, effectiveFrom, baseRate, serviceCharge, vatRate, active, save).forEach(form::addView)
+        val form = screen(if (isNew) "New tariff plan" else "Edit tariff plan", plan?.optString("name").orEmpty())
+        listOf(name, category, effectiveFrom, effectiveTo, baseRate, serviceCharge, vatRate, blockFrom, blockTo, blockRate, active, save).forEach(form::addView)
         addBack(form)
         save.setOnClickListener {
             if (name.text.isBlank() || baseRate.text.isBlank()) {
                 toast("Enter a name and base rate.")
                 return@setOnClickListener
             }
+            val blocks = JSONArray()
+            if (blockFrom.text.isNotBlank() || blockTo.text.isNotBlank() || blockRate.text.isNotBlank()) {
+                blocks.put(JSONObject()
+                    .put("from_unit", blockFrom.text.toString().toDoubleOrNull() ?: 0.0)
+                    .put("to_unit", blockTo.text.toString().toDoubleOrNull())
+                    .put("rate_per_unit", blockRate.text.toString().toDoubleOrNull() ?: 0.0))
+            }
             setLoading(save, true, "Save tariff plan")
             api.request(
                 "admin/settings.php", "POST",
-                JSONObject().put("action", "save_tariff_plan").put("tariff_plan_id", 0)
+                JSONObject().put("action", "save_tariff_plan").put("tariff_plan_id", plan?.optInt("id") ?: 0)
                     .put("tariff_name", name.text.toString().trim())
                     .put("tariff_category", category.tag?.toString().orEmpty())
                     .put("effective_from", effectiveFrom.text.toString().trim())
+                    .put("effective_to", effectiveTo.text.toString().trim())
                     .put("base_rate_per_unit", baseRate.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_service_charge", serviceCharge.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_vat_rate", vatRate.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_is_active", active.isChecked)
+                    .put("blocks", blocks)
             ) { r ->
                 runOnUiThread {
                     setLoading(save, false, "Save tariff plan")
@@ -6599,38 +7332,61 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPaymentTransactions() {
         childScreen()
+        loadPaymentTransactions("")
+    }
+
+    private fun loadPaymentTransactions(status: String) {
         showLoading("Loading payment transactions")
-        api.request("admin/payment_transactions.php") { result ->
+        val path = if (status.isBlank()) "admin/payment_transactions.php" else api.query("admin/payment_transactions.php", mapOf("status" to status))
+        api.request(path) { result ->
             onResult(result, "Could not load payment transactions") { response ->
                 val data = response.data()
-                val form = screen("Payment transactions", "Transaction history and status")
-                renderNode(form, "Counts", data.opt("counts"))
+                val counts = data.optJSONObject("counts") ?: JSONObject()
                 val payments = data.optJSONArray("payments") ?: JSONArray()
-                form.addView(sectionTitle("Transactions (${payments.length()})"))
-                if (payments.length() == 0) form.addView(empty("No payment transactions found."))
-                for (index in 0 until payments.length()) {
-                    val payment = payments.optJSONObject(index) ?: continue
-                    form.addView(card(
-                        "${money(payment.optDouble("amount"))} • ${payment.optString("status")}",
-                        "${payment.optString("full_name")} • ${payment.optString("account_number")}\n" +
-                            "${payment.optString("payment_method")} • ${payment.optString("transaction_date", payment.optString("created_at"))}"
-                    ))
-                    if (payment.optString("status") == "failed" && !payment.optBoolean("is_mpesa_payment")) {
-                        val request = secondaryButton("Request finance approval")
+                val form = screen("Payment transactions", if (status.isBlank()) "All statuses" else status.replaceFirstChar(Char::uppercase))
+                form.addView(heroBanner("Payment transactions", "Review payment statuses, receipts, ETIMS status and queue approvals.", "Finance records", toneBlue, R.drawable.ic_wallet, true))
+                form.addView(summaryCardGrid(listOf(
+                    summaryCard("All", (counts.optInt("pending") + counts.optInt("completed") + counts.optInt("failed") + counts.optInt("cancelled")).toString(), R.drawable.ic_receipt, toneNeutral),
+                    summaryCard("Pending", counts.optInt("pending").toString(), R.drawable.ic_warning_triangle, toneAmber),
+                    summaryCard("Completed", counts.optInt("completed").toString(), R.drawable.ic_circle_check, toneTeal),
+                    summaryCard("Failed", counts.optInt("failed").toString(), R.drawable.ic_circle_alert, toneRed)
+                )))
+                form.addView(buttonRow(
+                    "All" to { childScreen(); loadPaymentTransactions("") },
+                    "Pending" to { childScreen(); loadPaymentTransactions("pending") },
+                    "Completed" to { childScreen(); loadPaymentTransactions("completed") },
+                    "Failed" to { childScreen(); loadPaymentTransactions("failed") }
+                ))
+                form.addView(sectionPanel("Latest transactions", "ID, customer, account, receipt, amount, status, transaction date and ETIMS status.") {
+                    if (payments.length() == 0) addView(empty("No payment transactions found."))
+                    for (index in 0 until payments.length()) {
+                        val payment = payments.optJSONObject(index) ?: continue
                         val paymentId = payment.optInt("id")
-                        request.setOnClickListener {
-                            postAction("admin/payment_transactions.php", JSONObject().put("action", "request_approval").put("payment_id", paymentId)) { showPaymentTransactions() }
+                        addView(card(
+                            "#$paymentId • ${money(payment.optDouble("amount"))} • ${payment.optString("status")}",
+                            listOf(payment.optString("full_name", "Unknown"), payment.optString("account_number"), payment.optString("mpesa_receipt"), payment.optString("transaction_date", payment.optString("created_at")), "ETIMS ${payment.optString("etims_status", "-")}").filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(payment.optString("status"), toneBlue)
+                        ))
+                        val actions = mutableListOf<Pair<String, () -> Unit>>()
+                        if (payment.optString("status") == "completed" && payment.optString("document_url").isNotBlank()) {
+                            actions += "Receipt PDF" to { showDocumentViewer(api.resolveUrl("document.php?type=receipt&payment_id=$paymentId"), "Receipt") }
                         }
-                        form.addView(request)
+                        if (!payment.optBoolean("is_mpesa_payment")) {
+                            actions += "Queue approval" to {
+                                confirmThen("Create a finance approval item for this payment?") {
+                                    postAction("admin/payment_transactions.php", JSONObject().put("action", "request_approval").put("payment_id", paymentId)) { loadPaymentTransactions(status) }
+                                }
+                            }
+                        }
+                        if (actions.isNotEmpty()) addView(buttonRow(*actions.toTypedArray()))
                     }
-                }
+                })
                 addBack(form)
                 show(form)
             }
         }
     }
 
-    // ---------------------------------------------------------------------
     // Registration proformas
     // ---------------------------------------------------------------------
 
@@ -6641,34 +7397,38 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load registration proformas") { response ->
                 val data = response.data()
                 val fee = data.optDouble("registration_fee")
-                val form = screen("Registration proformas", "Registration fee: ${money(fee)}")
-                val create = actionButton("New registration proforma")
-                create.setOnClickListener { showCreateProforma(fee, data) }
-                form.addView(create)
                 val proformas = data.optJSONArray("proformas") ?: JSONArray()
-                form.addView(sectionTitle("Proformas (${proformas.length()})"))
-                if (proformas.length() == 0) form.addView(empty("No registration proformas found."))
-                for (index in 0 until proformas.length()) {
-                    val proforma = proformas.optJSONObject(index) ?: continue
-                    form.addView(card(
-                        "${proforma.optString("full_name")} • ${proforma.optString("account_number")}",
-                        "${proforma.optString("user_status")} • ${money(proforma.optDouble("outstanding_amount"))} outstanding"
-                    ))
-                    addDocumentButton(form, "Open proforma", proforma.optString("document_url"))
-                    proforma.optString("share_url").takeIf(String::isNotBlank)?.let { shareUrl ->
-                        form.addView(secondaryButton("Share payment link").apply {
-                            setOnClickListener { shareLink(normalizeExternalUrl(shareUrl), "Registration proforma") }
-                        })
-                    }
-                    if (proforma.optString("user_status") != "active") {
+                val form = screen("Registration proformas", "Registration fee: ${money(fee)}")
+                form.addView(heroBanner("Registration proformas", "Create, collect and follow registration proforma bills.", "Registration", toneTeal, R.drawable.ic_receipt, true))
+                form.addView(actionButton("New registration proforma").apply { setOnClickListener { showCreateProforma(fee, data) } })
+                form.addView(sectionPanel("Proforma lifecycle", "Customer, account, due date, amount, outstanding balance, status and actions.") {
+                    if (proformas.length() == 0) addView(empty("No registration proformas found."))
+                    for (index in 0 until proformas.length()) {
+                        val proforma = proformas.optJSONObject(index) ?: continue
                         val id = proforma.optInt("id")
-                        val sendStk = secondaryButton("Send M-Pesa STK push")
-                        sendStk.setOnClickListener {
-                            postAction("admin/registration_proformas.php", JSONObject().put("form_type", "send_stk").put("proforma_id", id)) { showRegistrationProformas() }
+                        val billId = proforma.optInt("bill_id")
+                        val outstanding = proforma.optDouble("outstanding_amount")
+                        val settled = outstanding <= 0.01
+                        val statusLabel = if (settled && proforma.optString("user_status") == "active") "Active" else if (settled) "Paid" else proforma.optString("bill_status", "pending")
+                        addView(card(
+                            "${proforma.optString("full_name")} • ${proforma.optString("phone_number")}",
+                            listOf(proforma.optString("account_number"), "Due ${proforma.optString("due_date")}", money(proforma.optDouble("bill_amount")), "Outstanding ${money(outstanding)}", statusLabel).filter(String::isNotBlank).joinToString(" • "),
+                            toneForStatus(statusLabel.lowercase(), toneBlue)
+                        ))
+                        val actions = mutableListOf<Pair<String, () -> Unit>>()
+                        actions += "Open pay page" to { shareLink(normalizeExternalUrl(proforma.optString("share_url")), "Registration proforma") }
+                        actions += (if (settled) "Open invoice" else "Open proforma invoice") to {
+                            val type = if (settled) "invoice" else "proforma"
+                            showDocumentViewer(api.resolveUrl("document.php?type=$type&bill_id=$billId"), if (settled) "Invoice" else "Proforma")
                         }
-                        form.addView(sendStk)
+                        if (!settled) {
+                            actions += "Send STK" to { postAction("admin/registration_proformas.php", JSONObject().put("form_type", "send_stk").put("proforma_id", id)) { showRegistrationProformas() } }
+                        }
+                        if (can("view_payments", "receive_payments")) actions += "Payments" to { loadPaymentsWorkspace(proforma.optString("account_number")) }
+                        if (can("view_customers")) actions += "Customer" to { showAdminCustomer(proforma.optInt("user_id")) }
+                        addView(buttonRow(*actions.toTypedArray()))
                     }
-                }
+                })
                 addBack(form)
                 show(form)
             }
@@ -6678,17 +7438,9 @@ class MainActivity : AppCompatActivity() {
     private fun showCreateProforma(fee: Double, data: JSONObject) {
         backAction = ::showRegistrationProformas
         val formMetadata = data.optJSONObject("form_metadata") ?: JSONObject()
-        val customerTypeOptions = formMetaOptions(
-            formMetadata,
-            "customer_type_options",
-            listOf("individual" to "Individual", "company" to "Company")
-        )
+        val customerTypeOptions = formMetaOptions(formMetadata, "customer_type_options", listOf("individual" to "Individual", "company" to "Company"))
         val countryOptions = formMetaOptions(formMetadata, "country_code_options", listOf("254" to "Kenya (+254)"))
-        val connectionOptions = formMetaOptions(
-            formMetadata,
-            "connection_type_options",
-            listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial")
-        )
+        val connectionOptions = formMetaOptions(formMetadata, "connection_type_options", listOf("domestic" to "Domestic", "commercial" to "Commercial", "industrial" to "Industrial"))
         val customerType = dropdownInput("Customer type", customerTypeOptions, "individual")
         val firstName = input("First name / contact first name")
         val middleName = input("Middle name (optional)")
@@ -6699,17 +7451,17 @@ class MainActivity : AppCompatActivity() {
         val phoneLocal = input("Phone number (local part)", InputType.TYPE_CLASS_PHONE)
         val email = input("Email", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val idNumber = input("ID number (individual)")
-        val address = input("Address")
-        val taxPin = input("Tax PIN (optional)")
+        val address = multilineInput("Address")
         val connectionType = dropdownInput("Connection type", connectionOptions, "domestic")
         val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        val taxPin = input("Tax PIN (optional)")
+        val locationLabel = input("Location label / plus code")
+        val latitude = input("Latitude (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED)
+        val longitude = input("Longitude (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED)
         val notes = multilineInput("Notes (optional)")
         val create = actionButton("Create proforma")
         val form = screen("New registration proforma", "Registration fee: ${money(fee)}")
-        listOf(
-            customerType, firstName, middleName, lastName, companyName, companyReg, phoneCode, phoneLocal,
-            email, idNumber, address, taxPin, connectionType, unitRate, notes, create
-        ).forEach(form::addView)
+        listOf(customerType, companyName, companyReg, firstName, lastName, middleName, phoneCode, phoneLocal, email, idNumber, address, connectionType, unitRate, taxPin, locationLabel, latitude, longitude, notes, create).forEach(form::addView)
         addBack(form)
         create.setOnClickListener {
             val body = JSONObject()
@@ -6726,6 +7478,9 @@ class MainActivity : AppCompatActivity() {
                 .put("id_number", idNumber.text.toString().trim())
                 .put("address", address.text.toString().trim())
                 .put("tax_pin", taxPin.text.toString().trim())
+                .put("location_label", locationLabel.text.toString().trim())
+                .put("latitude", latitude.text.toString().trim())
+                .put("longitude", longitude.text.toString().trim())
                 .put("connection_type", connectionType.tag?.toString().orEmpty())
                 .put("unit_rate", unitRate.text.toString().trim())
                 .put("notes", notes.text.toString().trim())
@@ -6740,7 +7495,6 @@ class MainActivity : AppCompatActivity() {
         show(form)
     }
 
-    // ---------------------------------------------------------------------
     // Invoicing
     // ---------------------------------------------------------------------
 
@@ -6751,63 +7505,93 @@ class MainActivity : AppCompatActivity() {
             onResult(result, "Could not load invoicing") { response ->
                 val data = response.data()
                 val metadata = data.optJSONObject("field_metadata") ?: JSONObject()
-                val identifierHint = metadata.optJSONObject("account_or_meter")?.optString("placeholder")
-                    ?.takeIf(String::isNotBlank)
-                    ?: "Account, meter number or name"
-                val (identifierBox, identifier) = searchableIdentifierField(identifierHint)
-                val reading = input(fieldLabel(data, "current_reading", "Current reading"), InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-                val billingMonth = datePickerInput(
-                    fieldLabel(data, "billing_month", "Billing month"),
-                    fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")),
-                    metadata.optJSONObject("billing_month")?.optString("picker_mode").orEmpty().ifBlank { "date" }
-                )
-                val dueDate = datePickerInput(
-                    fieldLabel(data, "due_date", "Due date"),
-                    fieldDefaultValue(data, "due_date", data.optString("default_due_date")),
-                    metadata.optJSONObject("due_date")?.optString("picker_mode").orEmpty().ifBlank { "date" }
-                )
-                val submit = actionButton("Create bill from reading")
-                val form = screen("Invoicing", "Create a pending bill from a meter reading")
-                form.addView(heroBanner(
-                    title = "Invoicing",
-                    message = "Create pending bills using the same billing defaults and search flow exposed by the server.",
-                    eyebrow = "Billing workspace",
-                    tone = toneBlue,
-                    iconRes = R.drawable.ic_receipt,
-                    compact = true
-                ))
+                val summary = data.optJSONObject("summary") ?: JSONObject()
+                val identifierHint = metadata.optJSONObject("account_or_meter")?.optString("placeholder")?.takeIf(String::isNotBlank) ?: "Search by account, meter, or client name"
+                val rows = mutableListOf<Pair<EditText, EditText>>()
+                lateinit var rowsPanel: LinearLayout
+                fun addReadingRow() {
+                    val (identifierBox, identifier) = searchableIdentifierField(identifierHint)
+                    val reading = input("Current reading (m³)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+                    rows += identifier to reading
+                    rowsPanel.addView(sectionPanel("Client ${rows.size}", "Search account / meter / name and enter the current reading. Meter photo upload is optional on the web and omitted in-app.") {
+                        addView(identifierBox)
+                        addView(reading)
+                    })
+                }
+                val billingMonth = datePickerInput(fieldLabel(data, "billing_month", "Billing month"), fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")), metadata.optJSONObject("billing_month")?.optString("picker_mode").orEmpty().ifBlank { "date" })
+                val dueDate = datePickerInput(fieldLabel(data, "due_date", "Due date"), fieldDefaultValue(data, "due_date", data.optString("default_due_date")), metadata.optJSONObject("due_date")?.optString("picker_mode").orEmpty().ifBlank { "date" })
+                val submit = actionButton("Submit readings")
+                val form = screen("Invoicing", "Record readings, generate invoices and review client balances")
+                form.addView(heroBanner("Invoicing", "Record client meter readings, generate invoices and review outstanding balances.", "Billing desk", toneBlue, R.drawable.ic_receipt, true))
                 form.addView(summaryCardGrid(listOf(
-                    summaryCard("Billing month", fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")), R.drawable.ic_circle_clock, toneBlue),
-                    summaryCard("Due date", fieldDefaultValue(data, "due_date", data.optString("default_due_date")), R.drawable.ic_circle_check, toneTeal),
-                    summaryCard("Rate", money(data.optJSONObject("settings")?.optDouble("rate_per_unit") ?: 0.0), R.drawable.ic_wallet, toneAmber),
-                    summaryCard("Service charge", money(data.optJSONObject("settings")?.optDouble("service_charge") ?: 0.0), R.drawable.ic_receipt, toneBlue)
+                    summaryCard("Clients", summary.optInt("total_clients").toString(), R.drawable.ic_person, toneBlue),
+                    summaryCard("Unpaid accounts", summary.optInt("clients_with_unpaid").toString(), R.drawable.ic_warning_triangle, toneAmber),
+                    summaryCard("Outstanding", money(summary.optDouble("total_unpaid_amount")), R.drawable.ic_wallet, toneRed),
+                    summaryCard("Paid last bill", summary.optInt("paid_clients").toString(), R.drawable.ic_circle_check, toneTeal)
                 )))
-                form.addView(sectionPanel(
-                    title = "Create bill from reading",
-                    description = "Search for an account or meter, then use the server-provided billing defaults for the reading entry."
-                ) {
-                    addView(identifierBox)
-                    listOf(reading, billingMonth, dueDate, submit).forEach(::addView)
+                val importBillingMonth = datePickerInput("Default billing month", fieldDefaultValue(data, "billing_month", data.optString("default_billing_month")), "date")
+                val importDueDate = datePickerInput("Default due date", fieldDefaultValue(data, "due_date", data.optString("default_due_date")), "date")
+                val csvRows = multilineInput("Paste CSV rows: account_or_meter,current_reading,billing_month,due_date")
+                val importButton = secondaryButton("Import pasted CSV readings")
+                form.addView(sectionPanel("Bulk import via CSV", "Paste rows from the website template; empty month/due-date cells use the defaults below.") {
+                    addView(csvRows); addView(importBillingMonth); addView(importDueDate); addView(importButton)
+                })
+                rowsPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                addReadingRow()
+                form.addView(sectionPanel("Record client meter readings", "Shared batch billing month and due date apply to every reading.") {
+                    addView(billingMonth); addView(dueDate); addView(rowsPanel)
+                    addView(secondaryButton("Add another client").apply { setOnClickListener { addReadingRow() } })
+                    addView(submit)
+                })
+                val clientListPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                fun refreshClientList(filter: String) {
+                    clientListPanel.removeAllViews()
+                    renderInvoicingClients(clientListPanel, data.optJSONArray("clients_summary"), filter)
+                }
+                form.addView(sectionPanel("Client billing overview", "Filter by all, paid, or unpaid; open invoices in-app or share payment links.") {
+                    addView(buttonRow(
+                        "All" to { refreshClientList("all") },
+                        "Paid" to { refreshClientList("paid") },
+                        "Unpaid" to { refreshClientList("unpaid") }
+                    ))
+                    addView(clientListPanel)
+                    refreshClientList("all")
                 })
                 addBack(form)
-                submit.setOnClickListener {
-                    if (identifier.text.isBlank() || reading.text.isBlank()) {
-                        toast("Enter the account and reading.")
-                        return@setOnClickListener
+                importButton.setOnClickListener {
+                    val entries = JSONArray()
+                    csvRows.text.toString().lineSequence().forEachIndexed { index, rawLine ->
+                        val line = rawLine.trim()
+                        if (line.isBlank()) return@forEachIndexed
+                        val cells = line.split(",").map { it.trim().trim('"') }
+                        val firstCell = cells.getOrNull(0).orEmpty().lowercase()
+                        if (index == 0 && firstCell in listOf("account_or_meter", "account", "client")) return@forEachIndexed
+                        val identifier = cells.getOrNull(0).orEmpty()
+                        val reading = cells.getOrNull(1).orEmpty()
+                        if (identifier.isBlank() && reading.isBlank()) return@forEachIndexed
+                        entries.put(JSONObject()
+                            .put("account_or_meter", identifier)
+                            .put("current_reading", reading.toDoubleOrNull() ?: 0.0)
+                            .put("billing_month", cells.getOrNull(2).orEmpty().ifBlank { importBillingMonth.text.toString().trim() })
+                            .put("due_date", cells.getOrNull(3).orEmpty().ifBlank { importDueDate.text.toString().trim() }))
                     }
-                    setLoading(submit, true, "Create bill from reading")
-                    api.request(
-                        "admin/invoicing.php", "POST",
-                        JSONObject().put("action", "add_reading")
-                            .put("account_or_meter", identifier.text.toString().trim())
-                            .put("current_reading", reading.text.toString().toDoubleOrNull() ?: 0.0)
-                            .put("billing_month", billingMonth.text.toString().trim())
-                            .put("due_date", dueDate.text.toString().trim())
-                    ) { r ->
-                        runOnUiThread {
-                            setLoading(submit, false, "Create bill from reading")
-                            r.onSuccess { toast(it.optString("message", "Reading submitted.")); showInvoicing() }.onFailure(::handleError)
+                    if (entries.length() == 0) { toast("Paste at least one CSV reading row."); return@setOnClickListener }
+                    setLoading(importButton, true, "Import pasted CSV readings")
+                    api.request("admin/invoicing.php", "POST", JSONObject().put("action", "import_readings_csv").put("entries", entries)) { r ->
+                        runOnUiThread { setLoading(importButton, false, "Import pasted CSV readings"); r.onSuccess { toast(it.optString("message", "Reading import completed.")); showInvoicing() }.onFailure(::handleError) }
+                    }
+                }
+                submit.setOnClickListener {
+                    val entries = JSONArray()
+                    rows.forEach { (identifier, reading) ->
+                        if (identifier.text.isNotBlank() || reading.text.isNotBlank()) {
+                            entries.put(JSONObject().put("account_or_meter", identifier.text.toString().trim()).put("current_reading", reading.text.toString().toDoubleOrNull() ?: 0.0).put("billing_month", billingMonth.text.toString().trim()).put("due_date", dueDate.text.toString().trim()))
                         }
+                    }
+                    if (entries.length() == 0) { toast("Add at least one client reading before submitting."); return@setOnClickListener }
+                    setLoading(submit, true, "Submit readings")
+                    api.request("admin/invoicing.php", "POST", JSONObject().put("action", "add_reading").put("entries", entries)) { r ->
+                        runOnUiThread { setLoading(submit, false, "Submit readings"); r.onSuccess { toast(it.optString("message", "Readings submitted.")); showInvoicing() }.onFailure(::handleError) }
                     }
                 }
                 show(form)
@@ -6815,7 +7599,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------------------
+    private fun renderInvoicingClients(parent: LinearLayout, clients: JSONArray?, filter: String) {
+        if (clients == null || clients.length() == 0) {
+            parent.addView(empty("No clients found."))
+            return
+        }
+        for (index in 0 until clients.length()) {
+            val client = clients.optJSONObject(index) ?: continue
+            val unpaid = client.optDouble("total_unpaid") > 0.01
+            if ((filter == "paid" && unpaid) || (filter == "unpaid" && !unpaid)) continue
+            val billId = client.optInt("last_bill_id")
+            parent.addView(card(
+                "${client.optString("account_number")} • ${client.optString("full_name")}",
+                listOf(client.optString("phone_number"), "Last bill ${money(client.optDouble("last_amount"))}", client.optString("last_status", "N/A"), "Due ${client.optString("last_due_date")}", "Unpaid ${money(client.optDouble("total_unpaid"))}").filter(String::isNotBlank).joinToString(" • "),
+                if (unpaid) toneAmber else toneTeal
+            ))
+            if (billId > 0) {
+                parent.addView(buttonRow(
+                    "Invoice" to { showDocumentViewer(api.resolveUrl("document.php?type=invoice&bill_id=$billId"), "Invoice") },
+                    "Share pay link" to { shareLink(normalizeExternalUrl(client.optString("payment_url")), "Payment link") },
+                    "Bill detail" to { showAdminBill(billId, client.optInt("id")) }
+                ))
+            }
+        }
+    }
+
     // Bill correction
     // ---------------------------------------------------------------------
 
