@@ -30,6 +30,10 @@ class ApiClient(private val tokenProvider: () -> String?) {
 
     // Notified of every request so the UI can remember which GET built the current screen
     // and replay it for pull-to-refresh.
+    // Identifies the app, its version and the device so the server activity log can
+    // show app sessions with the same detail (gadget, OS) as website visitors.
+    var userAgent: String = "MyWaterBillApp (Android)"
+
     var requestObserver: ((path: String, method: String, callback: (Result<JSONObject>) -> Unit) -> Unit)? = null
 
     fun request(
@@ -112,6 +116,7 @@ class ApiClient(private val tokenProvider: () -> String?) {
                             connectTimeout = 20_000
                             readTimeout = 30_000
                             setRequestProperty("Accept", "application/pdf,text/html,*/*")
+                            setRequestProperty("User-Agent", userAgent)
                             if (currentUrl.host.equals(URL(baseUrl).host, ignoreCase = true)) {
                                 tokenProvider()?.takeIf(String::isNotBlank)?.let {
                                     setRequestProperty("Authorization", "Bearer $it")
@@ -175,6 +180,7 @@ class ApiClient(private val tokenProvider: () -> String?) {
             connectTimeout = 20_000
             readTimeout = 20_000
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", userAgent)
             tokenProvider()?.takeIf(String::isNotBlank)?.let {
                 setRequestProperty("Authorization", "Bearer " + it)
             }

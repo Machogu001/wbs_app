@@ -249,6 +249,7 @@ class MainActivity : AppCompatActivity() {
         })
         token = preferences.getString("access_token", null)
         api = ApiClient { token }
+        api.userAgent = appUserAgent()
         api.requestObserver = { path, method, callback ->
             if (recordingScreenLoad && method == "GET" && pendingScreenLoad == null) {
                 pendingScreenLoad = ScreenLoad(path, callback)
@@ -1713,6 +1714,13 @@ class MainActivity : AppCompatActivity() {
     // App navigation: a bottom bar for the most-used destinations and a
     // top-left side menu with every feature the signed-in user may open.
     // ---------------------------------------------------------------------
+    private fun appUserAgent(): String {
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty().ifBlank { "unknown" }
+        val device = listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+            .filter { !it.isNullOrBlank() }.distinct().joinToString(" ")
+        return "MyWaterBillApp/$version (Android ${android.os.Build.VERSION.RELEASE}; $device) Mobile"
+    }
+
     private fun showsAppNavigation(): Boolean =
         token != null && currentUser != null && currentUser?.optBoolean("must_change_password") != true
 
@@ -2037,6 +2045,10 @@ class MainActivity : AppCompatActivity() {
             "Change password" to { showChangePassword() },
             if (staff) "Dashboard" to ::showDashboard else "Statement" to ::showStatement
         ))
+        form.addView(buttonRow(
+            "Change phone" to { showChangeContact(user, phone = true) },
+            "Change email" to { showChangeContact(user, phone = false) }
+        ))
         form.addView(profileGroup("Contact details", listOfNotNull(
             "Full name" to fullName,
             "Phone" to user.optString("phone_number"),
@@ -2051,7 +2063,9 @@ class MainActivity : AppCompatActivity() {
             "Status" to label(user.optString("status")),
             ("Connection type" to label(user.optString("connection_type"))).takeIf { !staff },
             ("Customer type" to label(user.optString("customer_type"))).takeIf { !staff },
-            "Username" to user.optString("username")
+            "Username" to user.optString("username"),
+            "Last login" to user.optString("last_login").takeUnless { it == "null" }.orEmpty().ifBlank { "-" },
+            "Last logout" to user.optString("last_logout").takeUnless { it == "null" }.orEmpty().ifBlank { "-" }
         )))
         form.addView(twoFactorPanel(user))
         form.addView(sectionPanel(
@@ -2279,17 +2293,15 @@ class MainActivity : AppCompatActivity() {
     private fun showEditProfile(user: JSONObject) {
             backAction = ::showProfile
             val name = input("Full name").apply { setText(user.optString("full_name")) }
-            val phone = input("Phone", InputType.TYPE_CLASS_PHONE).apply {
-                setText(user.optString("phone_number"))
-            }
-            val email = input("Email", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS).apply {
-                setText(user.optString("email"))
-            }
             val address = input("Address").apply { setText(user.optString("address")) }
-            val taxPin = input("Tax PIN (optional)").apply { setText(user.optString("tax_pin")) }
+            val taxPin = input("PIN / Tax ID (optional)").apply { setText(user.optString("tax_pin")) }
             val save = actionButton("Save profile")
-            val form = screen("Edit profile", "Update your contact details. Two-step verification is managed on your profile.")
-            listOf(name, phone, email, address, taxPin, save).forEach(form::addView)
+            val form = screen("Edit profile", "Phone number and email are changed with an OTP from your profile.")
+            listOf(name, address, taxPin, save).forEach(form::addView)
+            form.addView(buttonRow(
+                "Change phone" to { showChangeContact(user, phone = true) },
+                "Change email" to { showChangeContact(user, phone = false) }
+            ))
             addBack(form)
             save.setOnClickListener {
                 setLoading(save, true, "Save profile")
@@ -2298,8 +2310,8 @@ class MainActivity : AppCompatActivity() {
                     "POST",
                     JSONObject()
                         .put("full_name", name.text.toString().trim())
-                        .put("phone_number", phone.text.toString().trim())
-                        .put("email", email.text.toString().trim())
+                        .put("phone_number", user.optString("phone_number").takeUnless { it == "null" }.orEmpty())
+                        .put("email", user.optString("email").takeUnless { it == "null" }.orEmpty())
                         .put("address", address.text.toString().trim())
                         .put("tax_pin", taxPin.text.toString().trim())
                         .put("two_factor_enabled", user.optBoolean("two_factor_enabled"))
@@ -2310,6 +2322,66 @@ class MainActivity : AppCompatActivity() {
                         result.onSuccess {
                             currentUser = it.data().optJSONObject("user")
                             toast(it.optString("message", "Profile updated."))
+                            showProfile()
+                        }.onFailure(::handleError)
+                    }
+                }
+            }
+            show(form)
+        }
+
+    private fun showChangeContact(user: JSONObject, phone: Boolean) {
+            backAction = ::showProfile
+            val kind = if (phone) "phone number" else "email address"
+            val current = user.optString(if (phone) "phone_number" else "email").takeUnless { it == "null" }.orEmpty()
+            val newValue = input(
+                if (phone) "New phone number (e.g. 254712345678)" else "New email address",
+                if (phone) InputType.TYPE_CLASS_PHONE
+                else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            )
+            val otp = input("OTP code", InputType.TYPE_CLASS_NUMBER).apply { visibility = View.GONE }
+            val send = actionButton("Send OTP")
+            val confirm = actionButton("Confirm change").apply { visibility = View.GONE }
+            val form = screen(
+                if (phone) "Change phone number" else "Change email address",
+                "Current: ${current.ifBlank { "not set" }}. An OTP is sent to your current phone number."
+            )
+            listOf(newValue, send, otp, confirm).forEach(form::addView)
+            addBack(form)
+            send.setOnClickListener {
+                setLoading(send, true, "Send OTP")
+                api.request(
+                    "contact_change.php",
+                    "POST",
+                    JSONObject()
+                        .put("action", if (phone) "request_phone_otp" else "request_email_otp")
+                        .put(if (phone) "new_phone" else "new_email", newValue.text.toString().trim())
+                ) { result ->
+                    runOnUiThread {
+                        setLoading(send, false, "Resend OTP")
+                        result.onSuccess {
+                            toast(it.optString("message", "OTP sent."))
+                            otp.visibility = View.VISIBLE
+                            confirm.visibility = View.VISIBLE
+                            otp.requestFocus()
+                        }.onFailure(::handleError)
+                    }
+                }
+            }
+            confirm.setOnClickListener {
+                setLoading(confirm, true, "Confirm change")
+                api.request(
+                    "contact_change.php",
+                    "POST",
+                    JSONObject()
+                        .put("action", if (phone) "confirm_phone_change" else "confirm_email_change")
+                        .put("otp", otp.text.toString().trim())
+                ) { result ->
+                    runOnUiThread {
+                        setLoading(confirm, false, "Confirm change")
+                        result.onSuccess {
+                            it.data().optJSONObject("user")?.let { fresh -> currentUser = fresh }
+                            toast(it.optString("message", "Your $kind was updated."))
                             showProfile()
                         }.onFailure(::handleError)
                     }
@@ -4288,32 +4360,116 @@ class MainActivity : AppCompatActivity() {
     // Activity logs
     // ---------------------------------------------------------------------
 
-    private fun showActivityLogs() {
+    private fun showActivityLogs(filters: Map<String, String> = emptyMap(), page: Int = 1) {
         childScreen()
         showLoading("Loading activity logs")
-        api.request("admin/activity_logs.php?limit=50") { result ->
+        val query = (filters.filterValues { it.isNotBlank() } + mapOf("page" to page.toString(), "limit" to "20"))
+            .entries.joinToString("&") { "${it.key}=${Uri.encode(it.value)}" }
+        api.request("admin/activity_logs.php?$query") { result ->
             onResult(result, "Could not load activity logs") { response ->
                 val data = response.data()
                 val logs = data.optJSONArray("logs") ?: JSONArray()
-                val total = data.optJSONObject("pagination")?.optInt("total") ?: logs.length()
-                val form = screen("Activity logs", "$total entrie(s)")
+                val pagination = data.optJSONObject("pagination") ?: JSONObject()
+                val total = pagination.optInt("total", logs.length())
+                val totalPages = pagination.optInt("total_pages", 1).coerceAtLeast(1)
+                val options = data.optJSONObject("filters") ?: JSONObject()
+                val form = screen("Activity logs", "$total entrie(s) • page $page of $totalPages")
+
+                fun listOptions(array: JSONArray?, allLabel: String) =
+                    listOf("" to allLabel) + (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                        array?.optString(index)?.takeIf(String::isNotBlank)?.let { it to it }
+                    }
+                val adminOptions = listOf("" to "All admins") +
+                    (0 until (options.optJSONArray("admins")?.length() ?: 0)).mapNotNull { index ->
+                        val admin = options.optJSONArray("admins")?.optJSONObject(index) ?: return@mapNotNull null
+                        admin.optInt("id").toString() to admin.optString("label")
+                    }
+                val channelOptions = listOf("" to "All channels", "mobile_app" to "Mobile app", "website" to "Website")
+
+                val fromField = datePickerInput("From date", filters["from"].orEmpty())
+                val toField = datePickerInput("To date", filters["to"].orEmpty())
+                val adminField = dropdownInput("Admin", adminOptions, filters["user_id"].orEmpty())
+                val channelField = dropdownInput("Channel", channelOptions, filters["channel"].orEmpty())
+                val actionField = input("Action (e.g. update_settings)").apply { setText(filters["action"].orEmpty()) }
+                val searchField = input("Description or entity").apply { setText(filters["search"].orEmpty()) }
+                val ownerField = dropdownInput("Network owner", listOptions(options.optJSONArray("network_owners"), "All networks"), filters["network_owner"].orEmpty())
+                val asnField = dropdownInput("ASN", listOptions(options.optJSONArray("asns"), "All ASN"), filters["asn"].orEmpty())
+                fun currentFilters() = mapOf(
+                    "from" to fromField.text.toString().trim(),
+                    "to" to toField.text.toString().trim(),
+                    "user_id" to adminField.tag?.toString().orEmpty(),
+                    "channel" to channelField.tag?.toString().orEmpty(),
+                    "action" to actionField.text.toString().trim(),
+                    "search" to searchField.text.toString().trim(),
+                    "network_owner" to ownerField.tag?.toString().orEmpty(),
+                    "asn" to asnField.tag?.toString().orEmpty()
+                )
+                form.addView(sectionPanel("Filters", "Same filters as the website activity log.") {
+                    listOf(fromField, toField, adminField, channelField, actionField, searchField, ownerField, asnField)
+                        .forEach(::addView)
+                    addView(buttonRow(
+                        "Apply" to { showActivityLogs(currentFilters(), 1) },
+                        "Reset" to { showActivityLogs() }
+                    ))
+                })
+
                 if (logs.length() == 0) form.addView(empty("No activity logs found."))
                 for (index in 0 until logs.length()) {
                     val log = logs.optJSONObject(index) ?: continue
                     val id = log.optInt("id")
+                    val metadata = log.optJSONObject("metadata")
+                        ?: runCatching { JSONObject(log.optString("metadata")) }.getOrNull()
+                        ?: JSONObject()
+                    val viaApp = log.optString("channel") == "mobile_app" || metadata.optString("channel") == "mobile_app"
+                    val name = log.optString("full_name").takeIf { it.isNotBlank() && it != "null" } ?: "System"
+                    val account = log.optString("account_number").takeIf { it.isNotBlank() && it != "null" }
+                    val entityId = log.optInt("entity_id")
+                    val entity = log.optString("entity_type").takeIf { it.isNotBlank() && it != "null" }
+                        ?.let { if (entityId > 0) "$it #$entityId" else it } ?: "-"
+                    fun field(key: String, fallback: String = "-") =
+                        log.optString(key).takeIf { it.isNotBlank() && it != "null" } ?: fallback
+                    val gadget = field("gadget", listOf("device_type", "browser", "os")
+                        .mapNotNull { metadata.optString(it).takeIf(String::isNotBlank) }
+                        .joinToString(" / ").ifEmpty { "-" })
+                    val networkOwner = field("network_owner", listOf(metadata.optString("network_org"), metadata.optString("asn"))
+                        .filter(String::isNotBlank).joinToString(" ").ifEmpty { "-" })
+                    val location = field("location", metadata.optString("location").ifBlank { field("lookup_location") })
+                    val details = buildString {
+                        append("Date/Time: ").append(field("created_at")).append('\n')
+                        append("User: ").append(name).append(account?.let { " ($it)" }.orEmpty()).append('\n')
+                        append("Entity: ").append(entity).append('\n')
+                        append("Description: ").append(field("description")).append('\n')
+                        append("Location: ").append(location).append('\n')
+                        append("Network owner: ").append(networkOwner).append('\n')
+                        append("Gadget type: ").append(gadget).append('\n')
+                        append("IP: ").append(field("ip_address"))
+                        if (viaApp) {
+                            metadata.optString("app_version").takeIf(String::isNotBlank)?.let { append("\nApp version: ").append(it) }
+                        }
+                    }
+                    val action = log.optString("action").replace('_', ' ').replaceFirstChar { it.uppercase() }
                     form.addView(card(
-                        "${log.optString("action")} • ${log.optString("full_name", "System")}",
-                        "${log.optString("entity_type")} #${log.optInt("entity_id")}\n${log.optString("description")}\n${log.optString("created_at")}"
+                        "$action • ${if (viaApp) "Mobile app" else "Website"}",
+                        details,
+                        when {
+                            log.optString("action").contains("fail", true) -> toneRed
+                            viaApp -> toneTeal
+                            else -> toneBlue
+                        }
                     ))
                     val delete = destructiveButton("Delete entry")
                     delete.setOnClickListener {
                         postAction(
                             "admin/activity_logs.php",
                             JSONObject().put("action", "delete_selected").put("log_ids", JSONArray().put(id))
-                        ) { showActivityLogs() }
+                        ) { showActivityLogs(filters, page) }
                     }
                     form.addView(delete)
                 }
+                val paging = mutableListOf<Pair<String, () -> Unit>>()
+                if (page > 1) paging += "Previous" to { showActivityLogs(filters, page - 1) }
+                if (pagination.optBoolean("has_more") || page < totalPages) paging += "Next" to { showActivityLogs(filters, page + 1) }
+                if (paging.isNotEmpty()) form.addView(buttonRow(*paging.toTypedArray()))
                 addBack(form)
                 show(form)
             }
