@@ -5,8 +5,10 @@ plugins {
 }
 
 val signingProperties = Properties().apply {
-    rootProject.file("release-signing.properties").inputStream().use(::load)
+    rootProject.file("release-signing.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
 }
+val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { !signingProperties.getProperty(it).isNullOrBlank() }
 
 android {
     namespace = "com.example.myapplication"
@@ -25,17 +27,21 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
-            storePassword = signingProperties.getProperty("storePassword")
-            keyAlias = signingProperties.getProperty("keyAlias")
-            keyPassword = signingProperties.getProperty("keyPassword")
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
         }
