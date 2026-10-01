@@ -138,7 +138,8 @@ class MainActivity : AppCompatActivity() {
     private val amberDark by lazy { ContextCompat.getColor(this, R.color.brand_amber_dark) }
     private val danger by lazy { ContextCompat.getColor(this, R.color.brand_red) }
     private val dangerDark by lazy { ContextCompat.getColor(this, R.color.brand_red_dark) }
-    private val pageBackground by lazy { ContextCompat.getColor(this, R.color.page_background) }
+    private val headingText by lazy { ContextCompat.getColor(this, R.color.heading_text) }
+    private val headerGradientEnd by lazy { ContextCompat.getColor(this, R.color.header_gradient_end) }
     private val cardBackground by lazy { ContextCompat.getColor(this, R.color.surface_card) }
     private val cardBackgroundMuted by lazy { ContextCompat.getColor(this, R.color.surface_card_muted) }
     private val textPrimary by lazy { ContextCompat.getColor(this, R.color.body_text) }
@@ -6115,7 +6116,7 @@ class MainActivity : AppCompatActivity() {
         screenEpoch++
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(pageBackground)
+            background = WaterDropsDrawable(this@MainActivity)
             overScrollMode = View.OVER_SCROLL_NEVER
             isVerticalScrollBarEnabled = false
             val contentWidth = if (resources.configuration.screenWidthDp >= 760) dp(720) else ViewGroup.LayoutParams.MATCH_PARENT
@@ -6159,11 +6160,6 @@ class MainActivity : AppCompatActivity() {
         orientation = LinearLayout.VERTICAL
         contentDescription = header
         setPadding(dp(20), 0, dp(20), dp(36))
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            colors = intArrayOf(pageBackground, Color.argb(255, 248, 251, 255), pageBackground)
-            orientation = GradientDrawable.Orientation.TOP_BOTTOM
-        }
         addView(headerBar(header, subtitle), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -6184,7 +6180,7 @@ class MainActivity : AppCompatActivity() {
             shape = GradientDrawable.RECTANGLE
             val r = dp(30).toFloat()
             cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
-            colors = intArrayOf(navyDark, navy, primaryDark)
+            colors = intArrayOf(navyDark, navy, headerGradientEnd)
             orientation = GradientDrawable.Orientation.TL_BR
         }
         addView(LinearLayout(this@MainActivity).apply {
@@ -6262,7 +6258,7 @@ class MainActivity : AppCompatActivity() {
         text = value
         textSize = 19f
         typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-        setTextColor(navyDark)
+        setTextColor(headingText)
         letterSpacing = 0.015f
         setPadding(dp(2), dp(24), 0, dp(12))
     }
@@ -6291,7 +6287,7 @@ class MainActivity : AppCompatActivity() {
             text = title
             textSize = 18f
             typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-            setTextColor(navyDark)
+            setTextColor(headingText)
         })
         if (description.isNotBlank()) {
             addView(body(description).apply {

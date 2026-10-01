@@ -21,6 +21,12 @@
 
     <!-- Surfaces -->
     <color name="page_background">#EEF1F6</color>
+    <color name="page_background_alt">#DCEBF8</color>
+    <color name="water_drop">#1F3B8FDD</color>
+    <color name="water_drop_stroke">#333B8FDD</color>
+    <color name="water_drop_highlight">#B3FFFFFF</color>
+    <color name="heading_text">#081A33</color>
+    <color name="header_gradient_end">#124485</color>
     <color name="surface_card">#FFFFFF</color>
     <color name="surface_card_muted">#F9FAFC</color>
     <color name="surface_tint_blue">#E7EFFC</color>
