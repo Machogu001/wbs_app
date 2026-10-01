@@ -20,8 +20,8 @@ android {
         applicationId = "ke.co.bremac.mywaterbill"
         minSdk = 31
         targetSdk = 37
-        versionCode = 31
-        versionName = "2.0.11"
+        versionCode = 32
+        versionName = "2.0.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

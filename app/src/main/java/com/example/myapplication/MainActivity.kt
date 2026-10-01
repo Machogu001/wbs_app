@@ -6229,57 +6229,125 @@ class MainActivity : AppCompatActivity() {
                     addView(searchBtn)
                 })
                 searchBtn.setOnClickListener { childScreen(); loadPaymentsWorkspace(search.text.toString().trim()) }
+                if (currentUser == null) {
+                    form.addView(empty("Search for an account first to record a manual payment, apply a credit note or raise a refund / chargeback request."))
+                }
                 if (currentUser != null) {
+                    val accountNumber = currentUser.optString("account_number")
+                    val walletBalance = data.optDouble("wallet_balance", 0.0)
+                    val meterLabels = data.optJSONArray("meter_labels")?.let { array ->
+                        (0 until array.length()).map(array::optString).filter(String::isNotBlank)
+                    }.orEmpty().ifEmpty { listOfNotNull(currentUser.optString("meter_number").takeIf { it.isNotBlank() && it != "null" }) }
                     form.addView(summaryCardGrid(listOf(
-                        summaryCard("Customer", currentUser.optString("account_number"), R.drawable.ic_person, toneBlue),
-                        summaryCard("Wallet", money(data.optDouble("wallet_balance")), R.drawable.ic_wallet, toneTeal),
+                        summaryCard("Customer", accountNumber, R.drawable.ic_person, toneBlue),
+                        summaryCard("Wallet", money(walletBalance), R.drawable.ic_wallet, toneTeal),
                         summaryCard("Status", currentUser.optString("status").ifBlank { "Unknown" }, R.drawable.ic_circle_check, toneForStatus(currentUser.optString("status"), toneBlue))
                     )))
-                    form.addView(card(currentUser.optString("full_name"), "${currentUser.optString("account_number")} • ${currentUser.optString("status")}"))
+                    form.addView(card(
+                        currentUser.optString("full_name"),
+                        "$accountNumber • ${currentUser.optString("status")}\nMeters: ${meterLabels.joinToString(", ").ifBlank { "-" }}"
+                    ))
+                    if (walletBalance > 0) {
+                        form.addView(card(
+                            "Credit balance: ${money(walletBalance)}",
+                            "This will be automatically applied to the next new bill.",
+                            toneTeal
+                        ))
+                    }
+                    if (canReceivePayments) {
+                        form.addView(buttonRow(
+                            "Record payment" to { showManualPaymentForm(accountNumber, 0, "invoice", data) },
+                            "Credit note" to { showCreditNoteForm(accountNumber, 0, data) }
+                        ))
+                    }
                     val bills = data.optJSONArray("bills") ?: JSONArray()
                     form.addView(sectionPanel(
                         title = "Open bills",
-                        description = "Target a specific invoice or post to the customer balance, similar to the web payments workspace."
+                        description = "Pending and overdue invoices with their outstanding balance."
                     ) {
-                        if (bills.length() == 0) addView(empty("No open bills."))
+                        if (bills.length() == 0) addView(empty("No open bills to display for this account."))
                         for (index in 0 until bills.length()) {
                             val bill = bills.optJSONObject(index) ?: continue
                             val billId = bill.optInt("id")
-                            addView(card("${bill.optString("billing_month")} • ${money(bill.optDouble("outstanding_amount"))} due", bill.optString("status"), toneForStatus(bill.optString("status"), toneBlue)))
+                            val balance = bill.optDouble("outstanding_amount", bill.optDouble("amount"))
+                            addView(card(
+                                "#$billId • ${monthLabel(bill.optString("billing_month"))}",
+                                "Amount: ${money(bill.optDouble("amount"))}\nBalance: ${money(balance)}\nStatus: ${bill.optString("status").replaceFirstChar { it.uppercase() }}",
+                                toneForStatus(bill.optString("status"), toneBlue)
+                            ))
+                            val actions = mutableListOf<Pair<String, () -> Unit>>(
+                                "View detail" to { showAdminBill(billId, currentUser.optInt("id")) },
+                                "Invoice" to { showDocumentViewer(api.resolveUrl("document.php?type=invoice&bill_id=$billId"), "Invoice #$billId") }
+                            )
+                            addView(buttonRow(*actions.toTypedArray()))
+                            val more = mutableListOf<Pair<String, () -> Unit>>()
+                            if (balance > 0.01) more += "Remind" to { sendBillReminder(billId) }
                             if (canReceivePayments) {
-                                addView(buttonRow(
-                                    "Record payment" to { showManualPaymentForm(currentUser.optString("account_number"), billId, "invoice", data) },
-                                    "Credit note" to { showCreditNoteForm(currentUser.optString("account_number"), billId) }
-                                ))
+                                more += "Record payment" to { showManualPaymentForm(accountNumber, billId, "invoice", data) }
                             }
+                            if (more.isNotEmpty()) addView(buttonRow(*more.toTypedArray()))
                         }
                         if (canReceivePayments) {
-                            val recordBalance = secondaryButton("Record payment to account balance")
-                            recordBalance.setOnClickListener { showManualPaymentForm(currentUser.optString("account_number"), 0, "balance", data) }
+                            val recordBalance = secondaryButton("Record payment to outstanding balance")
+                            recordBalance.setOnClickListener { showManualPaymentForm(accountNumber, 0, "balance", data) }
                             addView(recordBalance)
                         }
                     })
                     val payments = data.optJSONArray("payments") ?: JSONArray()
                     form.addView(sectionPanel(
                         title = "Completed payments",
-                        description = "Review settled transactions and raise correction requests when needed."
+                        description = "Settled transactions. Raise a refund or chargeback request for approval when needed."
                     ) {
-                        if (payments.length() == 0) addView(empty("No completed payments."))
+                        if (payments.length() == 0) addView(empty("No completed payments to display for this account."))
                         for (index in 0 until payments.length()) {
                             val payment = payments.optJSONObject(index) ?: continue
                             val paymentId = payment.optInt("id")
-                            addView(card(money(payment.optDouble("amount")), "${payment.optString("status")} • ${payment.optString("transaction_date")}"))
-                            val adjust = secondaryButton("Request adjustment")
-                            adjust.setOnClickListener { showPaymentAdjustmentForm(currentUser.optString("account_number"), paymentId) }
-                            addView(adjust)
+                            val billId = payment.optInt("bill_id")
+                            val receipt = payment.optString("mpesa_receipt").takeIf { it.isNotBlank() && it != "null" } ?: "Manual"
+                            val date = payment.optString("transaction_date").takeIf { it.isNotBlank() && it != "null" }
+                                ?: payment.optString("created_at")
+                            addView(card(
+                                "#$paymentId $receipt • ${money(payment.optDouble("amount"))}",
+                                "Method: ${payment.optString("payment_method", "mpesa").replaceFirstChar { it.uppercase() }}\n" +
+                                    "Date: $date\n" +
+                                    "Available: ${money(payment.optDouble("available_adjustment_amount", 0.0))}\n" +
+                                    "Status: ${payment.optString("status").replaceFirstChar { it.uppercase() }}\n" +
+                                    "Bill: ${if (billId > 0) "#$billId" else "None"}",
+                                toneTeal
+                            ))
+                            val actions = mutableListOf<Pair<String, () -> Unit>>(
+                                "Receipt" to { showDocumentViewer(api.resolveUrl("document.php?type=receipt&payment_id=$paymentId"), "Receipt #$paymentId") }
+                            )
+                            if (billId > 0) actions += "Bill #$billId" to { showAdminBill(billId, currentUser.optInt("id")) }
+                            addView(buttonRow(*actions.toTypedArray()))
+                        }
+                        if (payments.length() > 0) {
+                            addView(secondaryButton("Refund / chargeback request").apply {
+                                setOnClickListener { showPaymentAdjustmentForm(accountNumber, 0, data) }
+                            })
                         }
                     })
+                    val adjustments = data.optJSONArray("payment_adjustments") ?: JSONArray()
                     form.addView(sectionPanel(
                         title = "Adjustment requests",
-                        description = "Pending and processed payment adjustment requests for this customer."
+                        description = "Refund and chargeback requests recorded for this account."
                     ) {
-                        addRecordList(this, "Adjustment requests", data.optJSONArray("payment_adjustments"), listOf("adjustment_type", "status"))
+                        if (adjustments.length() == 0) addView(empty("No refund or chargeback requests recorded for this account."))
+                        for (index in 0 until adjustments.length()) {
+                            val adjustment = adjustments.optJSONObject(index) ?: continue
+                            val receipt = adjustment.optString("mpesa_receipt").takeIf { it.isNotBlank() && it != "null" } ?: "Manual"
+                            addView(card(
+                                "${adjustment.optString("adjustment_type").replaceFirstChar { it.uppercase() }} • ${money(adjustment.optDouble("amount"))}",
+                                "Payment: #${adjustment.optInt("payment_id")} $receipt\n" +
+                                    "Status: ${adjustment.optString("status").replaceFirstChar { it.uppercase() }}\n" +
+                                    "Reason: ${adjustment.optString("reason").takeUnless { it == "null" }.orEmpty().ifBlank { "-" }}",
+                                toneForStatus(adjustment.optString("status"), toneAmber)
+                            ))
+                        }
                     })
+                }
+                if (can("view_reports")) {
+                    form.addView(secondaryButton("Payment reports").apply { setOnClickListener { showReports() } })
                 }
                 addBack(form)
                 show(form)
@@ -6333,8 +6401,17 @@ class MainActivity : AppCompatActivity() {
             )
         } else null
         val amount = input(amountLabel, InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val method = dropdownInput(methodLabel, methodOptions, fieldDefaultValue(paymentWorkspaceData, "payment_method", "cash"))
+        val method = dropdownInput(methodLabel, methodOptions, fieldDefaultValue(paymentWorkspaceData, "payment_method", "mpesa"))
         val reference = input(referenceLabel)
+        fun syncReferenceHint() {
+            reference.hint = if (method.tag?.toString() == "mpesa") "M-Pesa reference no" else "Payment reference no (optional) — slip or cheque number"
+        }
+        syncReferenceHint()
+        method.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) = syncReferenceHint()
+        })
         val paidDate = datePickerInput(
             paidDateLabel,
             fieldDefaultValue(paymentWorkspaceData, "paid_date", today()),
@@ -6345,8 +6422,10 @@ class MainActivity : AppCompatActivity() {
             fieldDefaultValue(paymentWorkspaceData, "paid_time", ""),
             fieldPickerMode(paymentWorkspaceData, "paid_time", "time")
         )
-        val phone = input("Phone number (optional)", InputType.TYPE_CLASS_PHONE)
-        val note = multilineInput("Note (optional)")
+        val phone = input("Payer phone (optional)", InputType.TYPE_CLASS_PHONE).apply {
+            setText(paymentWorkspaceData.optJSONObject("current_user")?.optString("phone_number")?.takeUnless { it == "null" }.orEmpty())
+        }
+        val note = input("Internal note (optional)")
         val save = actionButton("Record payment")
         val form = screen("Record payment", "$accountNumber • target: $target")
         form.addView(targetField)
@@ -6356,6 +6435,10 @@ class MainActivity : AppCompatActivity() {
         save.setOnClickListener {
             if (amount.text.isBlank() || paidDate.text.isBlank()) {
                 toast("Enter the amount and paid date.")
+                return@setOnClickListener
+            }
+            if (method.tag?.toString() == "mpesa" && reference.text.isBlank()) {
+                toast("M-Pesa reference number is required for M-Pesa payments.")
                 return@setOnClickListener
             }
             val selectedTarget = targetField.tag?.toString().orEmpty()
@@ -6387,68 +6470,129 @@ class MainActivity : AppCompatActivity() {
         show(form)
     }
 
-    private fun showCreditNoteForm(accountNumber: String, billId: Int) {
-        backAction = { showPaymentsWorkspace() }
+    private fun monthLabel(value: String): String =
+        runCatching {
+            val parsed = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(value.take(10)) ?: return value
+            SimpleDateFormat("MMM yyyy", Locale.US).format(parsed)
+        }.getOrDefault(value)
+
+    private fun confirmThen(message: String, onConfirm: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setMessage(message)
+            .setPositiveButton("Continue") { _, _ -> onConfirm() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun sendBillReminder(billId: Int) {
+        confirmThen("Send a payment reminder (SMS and email) for bill #$billId?") {
+            toast("Sending reminder…")
+            api.request(
+                "admin/payments.php", "POST",
+                JSONObject().put("action", "send_reminder").put("bill_id", billId)
+            ) { r ->
+                runOnUiThread {
+                    r.onSuccess { toast(it.optString("message", "Reminder sent.")) }.onFailure(::handleError)
+                }
+            }
+        }
+    }
+
+    private fun showCreditNoteForm(accountNumber: String, billId: Int, workspace: JSONObject) {
+        backAction = { loadPaymentsWorkspace(accountNumber) }
+        val bills = workspace.optJSONArray("bills") ?: JSONArray()
+        val billOptions = (0 until bills.length()).mapNotNull { index ->
+            val bill = bills.optJSONObject(index) ?: return@mapNotNull null
+            bill.optInt("id").toString() to "#${bill.optInt("id")} - ${monthLabel(bill.optString("billing_month"))} - ${money(bill.optDouble("amount"))} (${bill.optString("status").replaceFirstChar { it.uppercase() }})"
+        }
+        val billField = dropdownInput("Bill / Invoice", billOptions, billId.takeIf { it > 0 }?.toString().orEmpty())
         val type = dropdownInput(
             "Credit type",
-            listOf("full" to "Full credit", "partial" to "Partial credit"),
+            listOf("full" to "Full invoice", "partial" to "Partial (some units)"),
             "full"
         )
         val units = input("Units to credit (for partial)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val note = multilineInput("Note")
+        val note = input("Note (optional)")
         val save = actionButton("Apply credit note")
-        val form = screen("Credit note", "Bill #$billId")
-        listOf(type, units, note, save).forEach(form::addView)
+        val form = screen("Credit note adjustment", accountNumber)
+        listOf(billField, type, units, note, save).forEach(form::addView)
+        form.addView(empty("Full credit will cancel the invoice. Partial credit reduces billed units and amount while keeping the bill open."))
         addBack(form)
         save.setOnClickListener {
-            setLoading(save, true, "Apply credit note")
-            api.request(
-                "admin/payments.php", "POST",
-                JSONObject().put("action", "credit_note").put("account_number", accountNumber).put("bill_id", billId)
-                    .put("credit_type", type.tag?.toString().orEmpty())
-                    .put("units", units.text.toString().toDoubleOrNull() ?: 0.0)
-                    .put("note", note.text.toString().trim())
-            ) { r ->
-                runOnUiThread {
-                    setLoading(save, false, "Apply credit note")
-                    r.onSuccess { toast(it.optString("message", "Credit note applied.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
+            val selectedBill = billField.tag?.toString()?.toIntOrNull() ?: 0
+            if (selectedBill <= 0) {
+                toast("Select the bill to credit.")
+                return@setOnClickListener
+            }
+            confirmThen("Apply this credit note to the selected invoice?") {
+                setLoading(save, true, "Apply credit note")
+                api.request(
+                    "admin/payments.php", "POST",
+                    JSONObject().put("action", "credit_note").put("account_number", accountNumber).put("bill_id", selectedBill)
+                        .put("credit_type", type.tag?.toString().orEmpty())
+                        .put("units", units.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("note", note.text.toString().trim())
+                ) { r ->
+                    runOnUiThread {
+                        setLoading(save, false, "Apply credit note")
+                        r.onSuccess { toast(it.optString("message", "Credit note applied.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
+                    }
                 }
             }
         }
         show(form)
     }
 
-    private fun showPaymentAdjustmentForm(accountNumber: String, paymentId: Int) {
-        backAction = { showPaymentsWorkspace() }
+    private fun showPaymentAdjustmentForm(accountNumber: String, paymentId: Int, workspace: JSONObject) {
+        backAction = { loadPaymentsWorkspace(accountNumber) }
+        val payments = workspace.optJSONArray("payments") ?: JSONArray()
+        val paymentOptions = (0 until payments.length()).mapNotNull { index ->
+            val payment = payments.optJSONObject(index) ?: return@mapNotNull null
+            val receipt = payment.optString("mpesa_receipt").takeIf { it.isNotBlank() && it != "null" } ?: "Manual payment"
+            val available = payment.optDouble("available_adjustment_amount", 0.0)
+            payment.optInt("id").toString() to
+                "#${payment.optInt("id")} - $receipt - ${money(payment.optDouble("amount"))}" +
+                (if (available > 0) " (available ${money(available)})" else "")
+        }
+        val paymentField = dropdownInput("Completed payment", paymentOptions, paymentId.takeIf { it > 0 }?.toString().orEmpty())
         val type = dropdownInput(
-            "Adjustment type",
-            listOf("refund" to "Refund", "correction" to "Correction"),
+            "Request type",
+            listOf("refund" to "Refund", "chargeback" to "Chargeback"),
             "refund"
         )
         val amount = input("Amount", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val reason = multilineInput("Reason")
-        val save = actionButton("Submit adjustment request")
-        val form = screen("Payment adjustment", "Payment #$paymentId")
-        listOf(type, amount, reason, save).forEach(form::addView)
+        val reason = input("Reason (why this payment needs reversal or refund)")
+        val save = actionButton("Submit request")
+        val form = screen("Refund / chargeback request", accountNumber)
+        listOf(paymentField, type, amount, reason, save).forEach(form::addView)
+        form.addView(empty("Approved requests restore receivables and post accounting entries through the finance approvals workflow."))
         addBack(form)
         save.setOnClickListener {
-            setLoading(save, true, "Submit adjustment request")
-            api.request(
-                "admin/payments.php", "POST",
-                JSONObject().put("action", "payment_adjustment_request").put("account_number", accountNumber).put("payment_id", paymentId)
-                    .put("adjustment_type", type.tag?.toString().orEmpty())
-                    .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
-                    .put("reason", reason.text.toString().trim())
-            ) { r ->
-                runOnUiThread {
-                    setLoading(save, false, "Submit adjustment request")
-                    r.onSuccess { toast(it.optString("message", "Adjustment request submitted.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
+            val selectedPayment = paymentField.tag?.toString()?.toIntOrNull() ?: 0
+            val value = amount.text.toString().toDoubleOrNull() ?: 0.0
+            when {
+                selectedPayment <= 0 -> { toast("Select the completed payment."); return@setOnClickListener }
+                value <= 0.0 -> { toast("Enter an amount greater than zero."); return@setOnClickListener }
+                reason.text.isBlank() -> { toast("Enter the reason for this request."); return@setOnClickListener }
+            }
+            confirmThen("Submit this payment adjustment request for approval?") {
+                setLoading(save, true, "Submit request")
+                api.request(
+                    "admin/payments.php", "POST",
+                    JSONObject().put("action", "payment_adjustment_request").put("account_number", accountNumber).put("payment_id", selectedPayment)
+                        .put("adjustment_type", type.tag?.toString().orEmpty())
+                        .put("amount", value)
+                        .put("reason", reason.text.toString().trim())
+                ) { r ->
+                    runOnUiThread {
+                        setLoading(save, false, "Submit request")
+                        r.onSuccess { toast(it.optString("message", "Request submitted for approval.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
+                    }
                 }
             }
         }
         show(form)
     }
-
     // ---------------------------------------------------------------------
     // Payment transactions
     // ---------------------------------------------------------------------
