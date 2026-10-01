@@ -28,12 +28,17 @@ class ApiClient(private val tokenProvider: () -> String?) {
         return URL(URL(baseUrl), trimmed).toString()
     }
 
+    // Notified of every request so the UI can remember which GET built the current screen
+    // and replay it for pull-to-refresh.
+    var requestObserver: ((path: String, method: String, callback: (Result<JSONObject>) -> Unit) -> Unit)? = null
+
     fun request(
         path: String,
         method: String = "GET",
         body: JSONObject? = null,
         callback: (Result<JSONObject>) -> Unit
     ) {
+        requestObserver?.invoke(path, method, callback)
         executor.execute {
             callback(runCatching {
                 val connection = open(path, method)

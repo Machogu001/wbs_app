@@ -42,6 +42,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -114,9 +115,19 @@ class MainActivity : AppCompatActivity() {
     private var backAction: (() -> Unit)? = null
     private data class ScreenSnapshot(
         val view: View,
-        val backAction: (() -> Unit)?
+        val backAction: (() -> Unit)?,
+        val reload: ScreenLoad? = null
     )
+    private data class ScreenLoad(val path: String, val callback: (Result<JSONObject>) -> Unit)
     private val navigationHistory = mutableListOf<ScreenSnapshot>()
+    private val forwardHistory = mutableListOf<ScreenSnapshot>()
+    @Volatile private var recordingScreenLoad = false
+    @Volatile private var pendingScreenLoad: ScreenLoad? = null
+    private var replaceOnNextShow = false
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+    private var swipeStartTime = 0L
+    private var swipeEligible = false
     private var displayedScreen: ScreenSnapshot? = null
     private var selectedPhoto: Uri? = null
     private var readingInputs: List<EditText> = emptyList()
@@ -217,6 +228,11 @@ class MainActivity : AppCompatActivity() {
         })
         token = preferences.getString("access_token", null)
         api = ApiClient { token }
+        api.requestObserver = { path, method, callback ->
+            if (recordingScreenLoad && method == "GET" && pendingScreenLoad == null) {
+                pendingScreenLoad = ScreenLoad(path, callback)
+            }
+        }
         if (token == null) showLogin() else restoreSession()
     }
 
@@ -290,6 +306,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLogin() {
         navigationHistory.clear()
+        forwardHistory.clear()
         displayedScreen = null
         backAction = null
         currentUser = null
@@ -433,6 +450,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         navigationHistory.clear()
+        forwardHistory.clear()
         displayedScreen = null
         token = accessToken
         preferences.edit { putString("access_token", accessToken) }
@@ -6109,6 +6127,8 @@ class MainActivity : AppCompatActivity() {
         })
         form.addView(body("Please wait...").apply { gravity = Gravity.CENTER })
         show(form, transient = true)
+        pendingScreenLoad = null
+        recordingScreenLoad = true
     }
 
     private fun show(form: LinearLayout, transient: Boolean = false) {
@@ -6129,31 +6149,139 @@ class MainActivity : AppCompatActivity() {
                 )
             )
         }
-        ViewCompat.setOnApplyWindowInsetsListener(scroll) { view, insets ->
+        val screenLoad = if (transient) null else pendingScreenLoad
+        if (!transient) {
+            recordingScreenLoad = false
+            pendingScreenLoad = null
+        }
+        val root = SwipeRefreshLayout(this).apply {
+            setColorSchemeColors(primaryDark)
+            setProgressBackgroundColorSchemeColor(cardBackground)
+            isEnabled = screenLoad != null
+            addView(scroll)
+        }
+        root.setOnRefreshListener { refreshScreen(root) }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        setContentView(scroll)
-        scroll.post {
-            ViewCompat.requestApplyInsets(scroll)
+        setContentView(root)
+        root.post {
+            ViewCompat.requestApplyInsets(root)
         }
         // Status/navigation bar backgrounds and icon appearance both derive from
         // the effective night mode: dark background + light icons at night,
         // light background + dark icons otherwise.
         val lightBars = !isNightModeActive()
-        WindowInsetsControllerCompat(window, scroll).apply {
+        WindowInsetsControllerCompat(window, root).apply {
             isAppearanceLightStatusBars = lightBars
             isAppearanceLightNavigationBars = lightBars
         }
         if (!transient) {
             val previous = displayedScreen
-            if (previous != null && previous.view !== scroll) {
-                navigationHistory += previous
-                if (navigationHistory.size > 30) navigationHistory.removeAt(0)
+            if (replaceOnNextShow) {
+                replaceOnNextShow = false
+            } else {
+                if (previous != null) {
+                    navigationHistory += previous
+                    if (navigationHistory.size > 30) navigationHistory.removeAt(0)
+                }
+                forwardHistory.clear()
             }
-            displayedScreen = ScreenSnapshot(scroll, backAction)
+            displayedScreen = ScreenSnapshot(root, backAction, screenLoad)
         }
+    }
+
+    // Pull-to-refresh replays the GET request that originally built the screen; the
+    // refreshed result replaces the current screen in place instead of adding history.
+    private fun refreshScreen(root: SwipeRefreshLayout) {
+        val load = displayedScreen?.takeIf { it.view === root }?.reload
+        if (load == null) {
+            root.isRefreshing = false
+            return
+        }
+        replaceOnNextShow = true
+        recordingScreenLoad = true
+        pendingScreenLoad = load
+        api.request(load.path) { result ->
+            if (result.isFailure) {
+                runOnUiThread {
+                    replaceOnNextShow = false
+                    recordingScreenLoad = false
+                    pendingScreenLoad = null
+                    root.isRefreshing = false
+                }
+            }
+            load.callback(result)
+        }
+    }
+
+    private fun displaySnapshot(snapshot: ScreenSnapshot) {
+        closeActivePdf()
+        screenEpoch++
+        recordingScreenLoad = false
+        pendingScreenLoad = null
+        replaceOnNextShow = false
+        displayedScreen = snapshot
+        backAction = snapshot.backAction
+        (snapshot.view as? SwipeRefreshLayout)?.isRefreshing = false
+        setContentView(snapshot.view)
+        ViewCompat.requestApplyInsets(snapshot.view)
+    }
+
+    private fun navigateForward(): Boolean {
+        val next = forwardHistory.removeLastOrNull() ?: return false
+        displayedScreen?.let { navigationHistory += it }
+        displaySnapshot(next)
+        return true
+    }
+
+    private fun canScrollHorizontallyAt(view: View, x: Float, y: Float, direction: Int): Boolean {
+        if (!view.isShown) return false
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        if (x < location[0] || x > location[0] + view.width || y < location[1] || y > location[1] + view.height) return false
+        if (view.canScrollHorizontally(direction)) return true
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                if (canScrollHorizontallyAt(view.getChildAt(index), x, y, direction)) return true
+            }
+        }
+        return false
+    }
+
+    // Horizontal swipe navigation: finger moving left-to-right goes back, right-to-left
+    // goes forward. Swipes that start on horizontally scrollable content are ignored.
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeStartX = event.rawX
+                swipeStartY = event.rawY
+                swipeStartTime = event.eventTime
+                swipeEligible = displayedScreen != null
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> swipeEligible = false
+            MotionEvent.ACTION_UP -> if (swipeEligible) {
+                swipeEligible = false
+                val dx = event.rawX - swipeStartX
+                val dy = event.rawY - swipeStartY
+                val elapsed = event.eventTime - swipeStartTime
+                val isSwipe = kotlin.math.abs(dx) > dp(90) && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 2 && elapsed < 700
+                val root = window.decorView
+                if (isSwipe && !canScrollHorizontallyAt(root, swipeStartX, swipeStartY, if (dx > 0) -1 else 1)) {
+                    val handled = if (dx > 0) navigateBack() else navigateForward()
+                    if (handled) {
+                        val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                        super.dispatchTouchEvent(cancel)
+                        cancel.recycle()
+                        return true
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> swipeEligible = false
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     private fun screen(header: String, subtitle: String) = LinearLayout(this).apply {
@@ -7338,10 +7466,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             false
         }
-        displayedScreen = previous
-        backAction = previous.backAction
-        setContentView(previous.view)
-        ViewCompat.requestApplyInsets(previous.view)
+        displayedScreen?.let { forwardHistory += it }
+        displaySnapshot(previous)
         return true
     }
 
@@ -7851,6 +7977,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearSession() {
         navigationHistory.clear()
+        forwardHistory.clear()
         displayedScreen = null
         token = null
         currentUser = null
