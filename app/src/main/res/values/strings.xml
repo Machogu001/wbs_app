@@ -11,7 +11,6 @@
     <string name="link_unavailable">No app can open this link.</string>
     <string name="download_started">Download started</string>
     <string name="phone_country_code_default">254</string>
-    <string name="two_factor_method_default">sms</string>
     <string name="enable_two_factor">Enable two-factor authentication</string>
     <string name="payment_frequency_monthly">monthly</string>
     <string name="active_label">Active</string>

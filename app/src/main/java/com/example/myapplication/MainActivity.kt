@@ -2053,10 +2053,7 @@ class MainActivity : AppCompatActivity() {
             ("Customer type" to label(user.optString("customer_type"))).takeIf { !staff },
             "Username" to user.optString("username")
         )))
-        form.addView(profileGroup("Security", listOf(
-            "Two-step verification" to if (user.optBoolean("two_factor_enabled")) "Enabled" else "Not enabled",
-            "Password" to "Change it regularly to keep your account safe"
-        )))
+        form.addView(twoFactorPanel(user))
         form.addView(sectionPanel(
             title = "Appearance",
             description = "Choose how My Water Bill looks on this device."
@@ -2156,6 +2153,78 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    private fun twoFactorMethodOf(user: JSONObject): String =
+        if (user.optString("two_factor_method").equals("email", ignoreCase = true)) "email" else "sms"
+
+    // Mirrors the website's Profile > Two-step verification card: an on/off switch and
+    // a choice between SMS to the saved phone number or email to the saved address.
+    private fun twoFactorPanel(user: JSONObject) = sectionPanel(
+        title = "Two-step verification",
+        description = "Add a one-time code to every sign-in. Choose where the code should be sent."
+    ) {
+        var enabled = user.optBoolean("two_factor_enabled")
+        var method = twoFactorMethodOf(user)
+        val phone = user.optString("phone_number").ifBlank { "not set" }
+        val email = user.optString("email").ifBlank { "not set" }
+        val toggle = CheckBox(this@MainActivity).apply {
+            text = getString(R.string.enable_two_factor)
+            textSize = 15f
+            setTextColor(textPrimary)
+            isChecked = enabled
+        }
+        val methods = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        val save = actionButton("Save verification settings")
+        fun renderMethods() {
+            methods.removeAllViews()
+            methods.alpha = if (enabled) 1f else 0.5f
+            methods.addView(optionGroup(
+                "Send codes by",
+                listOf("sms" to "SMS to $phone", "email" to "Email to $email"),
+                method,
+                1
+            ) { selected ->
+                method = selected
+                renderMethods()
+            })
+        }
+        toggle.setOnCheckedChangeListener { _, checked ->
+            enabled = checked
+            renderMethods()
+        }
+        renderMethods()
+        addView(toggle)
+        addView(methods)
+        addView(save)
+        save.setOnClickListener {
+            if (enabled && method == "sms" && user.optString("phone_number").isBlank()) {
+                toast("Please add a phone number to your profile before enabling SMS verification.")
+                return@setOnClickListener
+            }
+            if (enabled && method == "email" && !android.util.Patterns.EMAIL_ADDRESS.matcher(user.optString("email")).matches()) {
+                toast("Please add a valid email address to your profile before enabling email verification.")
+                return@setOnClickListener
+            }
+            setLoading(save, true, "Save verification settings")
+            api.request(
+                "profile_update.php",
+                "POST",
+                JSONObject()
+                    .put("two_factor_enabled", enabled)
+                    .put("two_factor_method", method)
+            ) { result ->
+                runOnUiThread {
+                    setLoading(save, false, "Save verification settings")
+                    result.onSuccess {
+                        it.data().optJSONObject("user")?.let { updated -> currentUser = updated }
+                        toast("Two-step verification settings updated.")
+                        replaceOnNextShow = true
+                        showProfile()
+                    }.onFailure(::handleError)
+                }
+            }
+        }
+    }
+
     private fun profileGroup(title: String, rows: List<Pair<String, String>>) = sectionPanel(title, "") {
         rows.forEachIndexed { index, (label, value) ->
             if (index > 0) {
@@ -2217,15 +2286,10 @@ class MainActivity : AppCompatActivity() {
                 setText(user.optString("email"))
             }
             val address = input("Address").apply { setText(user.optString("address")) }
-            val taxPin = input("Tax PIN (optional)")
-            val twoFactorMethod = input("2FA method: sms or email").apply { setText(R.string.two_factor_method_default) }
-            val twoFactor = CheckBox(this).apply {
-                text = getString(R.string.enable_two_factor)
-                isChecked = user.optBoolean("two_factor_enabled")
-            }
+            val taxPin = input("Tax PIN (optional)").apply { setText(user.optString("tax_pin")) }
             val save = actionButton("Save profile")
-            val form = screen("Edit profile", "Update your contact and security settings.")
-            listOf(name, phone, email, address, taxPin, twoFactor, twoFactorMethod, save).forEach(form::addView)
+            val form = screen("Edit profile", "Update your contact details. Two-step verification is managed on your profile.")
+            listOf(name, phone, email, address, taxPin, save).forEach(form::addView)
             addBack(form)
             save.setOnClickListener {
                 setLoading(save, true, "Save profile")
@@ -2238,8 +2302,8 @@ class MainActivity : AppCompatActivity() {
                         .put("email", email.text.toString().trim())
                         .put("address", address.text.toString().trim())
                         .put("tax_pin", taxPin.text.toString().trim())
-                        .put("two_factor_enabled", twoFactor.isChecked)
-                        .put("two_factor_method", twoFactorMethod.text.toString().trim().lowercase())
+                        .put("two_factor_enabled", user.optBoolean("two_factor_enabled"))
+                        .put("two_factor_method", twoFactorMethodOf(user))
                 ) { result ->
                     runOnUiThread {
                         setLoading(save, false, "Save profile")
