@@ -5194,7 +5194,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showAccountEditor(account: JSONObject?, accounts: JSONArray) {
         backAction = ::showAccountingOverview
-        val code = input("Account code").apply { setText(account?.optString("code") ?: "") }
+        // Like the website, the account code is only set when an account is created.
+        val code = if (account == null) input("Account code (e.g. 6000)")
+            else readOnlyInput("Account code (cannot be changed)", account.optString("code"))
         val name = input("Account name").apply { setText(account?.optString("name") ?: "") }
         val accountTypes = listOf(
             "asset" to "Asset",
@@ -6027,10 +6029,13 @@ class MainActivity : AppCompatActivity() {
                 val idNumber = input("ID number").apply { setText(user.optString("id_number")) }
                 val address = input("Address").apply { setText(user.optString("address")) }
                 val taxPin = input("Tax PIN (optional)").apply { setText(user.optString("tax_pin")) }
-                val customerType = dropdownInput("Customer type", customerTypeOptions, user.optString("customer_type").ifBlank { "individual" })
-                val companyName = input("Company name (if company)").apply { setText(user.optString("company_name")) }
-                val contactPerson = input("Contact person (if company)").apply { setText(user.optString("contact_person_name")) }
-                val companyRegistration = input("Company registration no. (optional)").apply { setText(user.optString("company_registration_number")) }
+                val customerTypeValue = user.optString("customer_type").ifBlank { "individual" }
+                val customerTypeLabel = customerTypeOptions.firstOrNull { it.first == customerTypeValue }?.second
+                    ?: customerTypeValue.replace('_', ' ').replaceFirstChar(Char::uppercase)
+                val customerType = readOnlyInput("Customer type (cannot be changed here)", customerTypeLabel)
+                val companyName = readOnlyInput("Company name (cannot be changed here)", user.optString("company_name"))
+                val contactPerson = readOnlyInput("Contact person (cannot be changed here)", user.optString("contact_person_name"))
+                val companyRegistration = readOnlyInput("Company registration no. (cannot be changed here)", user.optString("company_registration_number"))
                 val meterNumber = input("Primary meter number").apply { setText(user.optString("meter_number")) }
                 val connectionType = dropdownInput("Connection type", connectionOptions, user.optString("connection_type").ifBlank { "domestic" })
                 val unitRate = input("Custom unit rate (optional)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL).apply {
@@ -6187,10 +6192,6 @@ class MainActivity : AppCompatActivity() {
                         .put("id_number", idNumber.text.toString().trim())
                         .put("address", address.text.toString().trim())
                         .put("tax_pin", taxPin.text.toString().trim())
-                        .put("customer_type", customerType.tag?.toString().orEmpty())
-                        .put("company_name", companyName.text.toString().trim())
-                        .put("contact_person_name", contactPerson.text.toString().trim())
-                        .put("company_registration_number", companyRegistration.text.toString().trim())
                         .put("meter_number", meterNumber.text.toString().trim())
                         .put("connection_type", connectionType.tag?.toString().orEmpty())
                         .put("unit_rate", unitRate.text.toString().trim())
@@ -8415,6 +8416,18 @@ class MainActivity : AppCompatActivity() {
             }
         })
         return container to field
+    }
+
+    // Shows a value the user may see but not change (mirrors fields the website does not let
+    // users edit). The server also ignores/rejects changes to these fields.
+    private fun readOnlyInput(hintText: String, value: String): EditText = input(hintText).apply {
+        setText(value.takeUnless { it == "null" }.orEmpty())
+        keyListener = null
+        isFocusable = false
+        isFocusableInTouchMode = false
+        isLongClickable = false
+        setTextIsSelectable(false)
+        alpha = 0.7f
     }
 
     private fun dropdownInput(
