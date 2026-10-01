@@ -3278,8 +3278,12 @@ class MainActivity : AppCompatActivity() {
         selectedPhoto = null
         val reading = input("Current reading", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         val meter = input("Meter number (optional)")
-        val billingMonth = datePickerInput("Billing month", today(), "month")
-        val dueDate = datePickerInput("Due date", today())
+        // Same defaults as the website: last month's bill, due in 3 days.
+        val defaultMonth = Calendar.getInstance().apply { add(Calendar.MONTH, -1); set(Calendar.DAY_OF_MONTH, 1) }
+        val defaultDue = Calendar.getInstance().apply { add(Calendar.DAY_OF_MONTH, 3) }
+        val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val billingMonth = datePickerInput("Billing month", dayFormat.format(defaultMonth.time), "month")
+        val dueDate = datePickerInput("Due date", dayFormat.format(defaultDue.time))
         readingInputs = listOf(reading, meter, billingMonth, dueDate)
         val choosePhoto = secondaryButton("Choose meter photo")
         readingPhotoLabel = body("No photo selected")
