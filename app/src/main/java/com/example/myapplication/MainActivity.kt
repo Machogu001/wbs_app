@@ -1204,6 +1204,7 @@ class MainActivity : AppCompatActivity() {
         val summary = data.optJSONObject("summary") ?: JSONObject()
         val screen = data.optJSONObject("screen") ?: JSONObject()
         val user = currentUser
+        val customerSession = isCustomerUser()
         val name = user?.optString("full_name")?.takeIf(String::isNotBlank) ?: "customer"
         val latestBillsSection = screenSection(screen, "latest_bills")
         val latestPaymentSection = screenSection(screen, "latest_payment")
@@ -1211,34 +1212,53 @@ class MainActivity : AppCompatActivity() {
         val form = screen(screen.optString("title").ifBlank { "My Water Bill" }, "Welcome back")
         val outstanding = summary.optDouble("outstanding_amount")
         val heroMessage = buildString {
-            append(if (outstanding > 0.01) "Outstanding balance ${money(outstanding)}" else "Your account is up to date")
-            user?.optString("account_number")?.takeIf(String::isNotBlank)?.let {
-                append(" • Account ")
-                append(it)
+            if (customerSession) {
+                append(if (outstanding > 0.01) "Outstanding balance ${money(outstanding)}" else "Your account is up to date")
+                user?.optString("account_number")?.takeIf(String::isNotBlank)?.let {
+                    append(" • Account ")
+                    append(it)
+                }
+            } else {
+                append("Your workspace reflects the staff access granted to this account.")
             }
         }
         form.addView(heroBanner(
             title = "Hello, ${name.replaceFirstChar(Char::uppercase)}",
             message = heroMessage,
             eyebrow = user?.optString("role")?.replaceFirstChar(Char::uppercase).orEmpty().ifBlank { "Customer" },
-            tone = if (outstanding > 0.01) toneAmber else toneTeal,
-            iconRes = if (outstanding > 0.01) R.drawable.ic_wallet else R.drawable.ic_circle_check,
+            tone = if (customerSession && outstanding > 0.01) toneAmber else toneTeal,
+            iconRes = if (customerSession && outstanding > 0.01) R.drawable.ic_wallet else R.drawable.ic_circle_check,
             compact = true
         ))
         form.addView(spotlightPanel(
-            title = if (outstanding > 0.01) "Balance needs attention" else "Account in good standing",
-            message = if (outstanding > 0.01) {
-                "Review your latest bills, payment activity and meter usage from one place."
+            title = if (customerSession) {
+                if (outstanding > 0.01) "Balance needs attention" else "Account in good standing"
             } else {
-                "Stay on top of statements, readings and support updates from your dashboard."
+                "Role-based access"
             },
-            meta = listOfNotNull(
-                user?.optString("account_number").orEmpty().takeIf(String::isNotBlank),
-                summary.optInt("active_meters").takeIf { it > 0 }?.let { "$it active meter(s)" },
-                summary.optInt("pending_bills").takeIf { it > 0 }?.let { "$it pending bill(s)" }
-                    ?: "No pending bills"
-            ).joinToString(" • "),
-            tone = if (outstanding > 0.01) toneAmber else toneBlue
+            message = if (customerSession) {
+                if (outstanding > 0.01) {
+                    "Review your latest bills, payment activity and meter usage from one place."
+                } else {
+                    "Stay on top of statements, readings and support updates from your dashboard."
+                }
+            } else {
+                "Only the staff modules allowed for this role are shown below. Admin accounts keep full system access."
+            },
+            meta = if (customerSession) {
+                listOfNotNull(
+                    user?.optString("account_number").orEmpty().takeIf(String::isNotBlank),
+                    summary.optInt("active_meters").takeIf { it > 0 }?.let { "$it active meter(s)" },
+                    summary.optInt("pending_bills").takeIf { it > 0 }?.let { "$it pending bill(s)" }
+                        ?: "No pending bills"
+                ).joinToString(" • ")
+            } else {
+                listOfNotNull(
+                    user?.optString("role")?.replaceFirstChar(Char::uppercase)?.takeIf(String::isNotBlank),
+                    if (isAdminUser()) "Full system access" else "Scoped staff access"
+                ).joinToString(" • ")
+            },
+            tone = if (customerSession && outstanding > 0.01) toneAmber else toneBlue
         ))
         form.addView(sectionPanel(
             title = "Signed in",
@@ -1254,127 +1274,129 @@ class MainActivity : AppCompatActivity() {
                 "Sign out" to ::performSignOut
             ))
         })
-        val primaryAction = mobileActionSpec(screen.optJSONObject("primary_action"))
-        val secondaryActions = (screen.optJSONArray("secondary_actions") ?: JSONArray())
-            .let { actions ->
-                buildList {
-                    for (index in 0 until actions.length()) {
-                        val action = mobileActionSpec(actions.optJSONObject(index)) ?: continue
-                        if (action.first.equals("Profile", ignoreCase = true)) continue
-                        add(action)
+        if (customerSession) {
+            val primaryAction = mobileActionSpec(screen.optJSONObject("primary_action"))
+            val secondaryActions = (screen.optJSONArray("secondary_actions") ?: JSONArray())
+                .let { actions ->
+                    buildList {
+                        for (index in 0 until actions.length()) {
+                            val action = mobileActionSpec(actions.optJSONObject(index)) ?: continue
+                            if (action.first.equals("Profile", ignoreCase = true)) continue
+                            add(action)
+                        }
                     }
                 }
+            if (primaryAction != null || secondaryActions.isNotEmpty()) {
+                form.addView(sectionPanel(
+                    title = "Recommended next step",
+                    description = "Use the server-guided actions for the quickest route through your account tasks."
+                ) {
+                    primaryAction?.let { (label, action) ->
+                        addView(actionButton(label).apply {
+                            setOnClickListener { action() }
+                        })
+                    }
+                    if (secondaryActions.isNotEmpty()) {
+                        addView(buttonRow(*secondaryActions.toTypedArray()))
+                    }
+                })
             }
-        if (primaryAction != null || secondaryActions.isNotEmpty()) {
-            form.addView(sectionPanel(
-                title = "Recommended next step",
-                description = "Use the server-guided actions for the quickest route through your account tasks."
-            ) {
-                primaryAction?.let { (label, action) ->
-                    addView(actionButton(label).apply {
-                        setOnClickListener { action() }
-                    })
-                }
-                if (secondaryActions.isNotEmpty()) {
-                    addView(buttonRow(*secondaryActions.toTypedArray()))
-                }
-            })
-        }
-        val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
-        val accountSummaryCards = summaryCards.ifEmpty {
-            listOf(
-                summaryCard(
-                    "Outstanding",
-                    money(summary.optDouble("outstanding_amount")),
-                    R.drawable.ic_wallet,
-                    if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
-                ),
-                summaryCard(
-                    "Pending bills",
-                    summary.optInt("pending_bills").toString(),
-                    R.drawable.ic_receipt,
-                    toneBlue
-                ),
-                summaryCard(
-                    "Overdue bills",
-                    summary.optInt("overdue_bills").toString(),
-                    R.drawable.ic_warning_triangle,
-                    if (summary.optInt("overdue_bills") > 0) toneRed else toneTeal
-                ),
-                summaryCard(
-                    "Active meters",
-                    summary.optInt("active_meters").toString(),
-                    R.drawable.ic_meter,
-                    toneTeal
-                )
-            )
-        }
-        form.addView(sectionPanel(
-            title = "Account summary",
-            description = "A quick financial snapshot in the same blue-and-gold tone as the web dashboard."
-        ) {
-            addView(summaryCardGrid(accountSummaryCards))
-        })
-        form.addView(sectionTitle(latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" }))
-        addRecordList(
-            parent = form,
-            heading = latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" },
-            rows = data.optJSONArray("latest_bills"),
-            titleFields = listOf("type_label", "billing_month"),
-            onClick = { row -> showBill(row.optInt("id")) },
-            emptyState = latestBillsSection?.optString("empty_state").orEmpty().ifBlank { "No bills available yet." },
-            showHeading = false
-        )
-        val latestPayment = data.optJSONObject("latest_payment")
-        form.addView(sectionTitle(latestPaymentSection?.optString("title").orEmpty().ifBlank { "Latest payment" }))
-        if (latestPayment == null) {
-            form.addView(empty(latestPaymentSection?.optString("empty_state").orEmpty().ifBlank { "No payment has been recorded yet." }))
-        } else {
-            val paymentCard = card(
-                money(latestPayment.optDouble("amount")),
+            val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
+            val accountSummaryCards = summaryCards.ifEmpty {
                 listOf(
-                    latestPayment.optString("status"),
-                    latestPayment.optString("payment_method", "M-Pesa"),
-                    latestPayment.optString("mpesa_receipt"),
-                    latestPayment.optString("transaction_date")
-                ).filter(String::isNotBlank).joinToString(" • "),
-                inferRecordTone(latestPayment, toneBlue)
-            )
-            if (latestPayment.optInt("id") > 0) {
-                paymentCard.isClickable = true
-                paymentCard.isFocusable = true
-                paymentCard.setOnClickListener { showPayment(latestPayment.optInt("id")) }
+                    summaryCard(
+                        "Outstanding",
+                        money(summary.optDouble("outstanding_amount")),
+                        R.drawable.ic_wallet,
+                        if (summary.optDouble("outstanding_amount") > 0.01) toneAmber else toneTeal
+                    ),
+                    summaryCard(
+                        "Pending bills",
+                        summary.optInt("pending_bills").toString(),
+                        R.drawable.ic_receipt,
+                        toneBlue
+                    ),
+                    summaryCard(
+                        "Overdue bills",
+                        summary.optInt("overdue_bills").toString(),
+                        R.drawable.ic_warning_triangle,
+                        if (summary.optInt("overdue_bills") > 0) toneRed else toneTeal
+                    ),
+                    summaryCard(
+                        "Active meters",
+                        summary.optInt("active_meters").toString(),
+                        R.drawable.ic_meter,
+                        toneTeal
+                    )
+                )
             }
-            form.addView(paymentCard)
-        }
-        form.addView(sectionPanel(
-            title = metersSection?.optString("title").orEmpty().ifBlank { "Meters and service points" },
-            description = "Track active meters and move quickly into readings or support workflows."
-        ) {
+            form.addView(sectionPanel(
+                title = "Account summary",
+                description = "A quick financial snapshot in the same blue-and-gold tone as the web dashboard."
+            ) {
+                addView(summaryCardGrid(accountSummaryCards))
+            })
+            form.addView(sectionTitle(latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" }))
             addRecordList(
-                parent = this,
-                heading = metersSection?.optString("title").orEmpty().ifBlank { "Meters" },
-                rows = data.optJSONArray("meters"),
-                titleFields = listOf("meter_number", "meter_label"),
-                emptyState = metersSection?.optString("empty_state").orEmpty().ifBlank { "No active meters found." },
+                parent = form,
+                heading = latestBillsSection?.optString("title").orEmpty().ifBlank { "Latest bills" },
+                rows = data.optJSONArray("latest_bills"),
+                titleFields = listOf("type_label", "billing_month"),
+                onClick = { row -> showBill(row.optInt("id")) },
+                emptyState = latestBillsSection?.optString("empty_state").orEmpty().ifBlank { "No bills available yet." },
                 showHeading = false
             )
-        })
-        form.addView(sectionPanel(
-            title = "Quick actions",
-            description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
-        ) {
-            addView(quickActionGrid(listOf(
-            Triple("Statement", R.drawable.ic_receipt, ::showStatement),
-            Triple("Bills", R.drawable.ic_wallet) { showBills() },
-            Triple("Payments", R.drawable.ic_circle_check, ::showPayments),
-            Triple("Meters", R.drawable.ic_meter, ::showMeters),
-            Triple("Readings", R.drawable.ic_circle_clock, ::showReadings),
-            Triple("Submit reading", R.drawable.ic_meter, ::showSubmitReading),
-            Triple("Complaints", R.drawable.ic_support, ::showComplaints),
-            Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
-            )))
-        })
+            val latestPayment = data.optJSONObject("latest_payment")
+            form.addView(sectionTitle(latestPaymentSection?.optString("title").orEmpty().ifBlank { "Latest payment" }))
+            if (latestPayment == null) {
+                form.addView(empty(latestPaymentSection?.optString("empty_state").orEmpty().ifBlank { "No payment has been recorded yet." }))
+            } else {
+                val paymentCard = card(
+                    money(latestPayment.optDouble("amount")),
+                    listOf(
+                        latestPayment.optString("status"),
+                        latestPayment.optString("payment_method", "M-Pesa"),
+                        latestPayment.optString("mpesa_receipt"),
+                        latestPayment.optString("transaction_date")
+                    ).filter(String::isNotBlank).joinToString(" • "),
+                    inferRecordTone(latestPayment, toneBlue)
+                )
+                if (latestPayment.optInt("id") > 0) {
+                    paymentCard.isClickable = true
+                    paymentCard.isFocusable = true
+                    paymentCard.setOnClickListener { showPayment(latestPayment.optInt("id")) }
+                }
+                form.addView(paymentCard)
+            }
+            form.addView(sectionPanel(
+                title = metersSection?.optString("title").orEmpty().ifBlank { "Meters and service points" },
+                description = "Track active meters and move quickly into readings or support workflows."
+            ) {
+                addRecordList(
+                    parent = this,
+                    heading = metersSection?.optString("title").orEmpty().ifBlank { "Meters" },
+                    rows = data.optJSONArray("meters"),
+                    titleFields = listOf("meter_number", "meter_label"),
+                    emptyState = metersSection?.optString("empty_state").orEmpty().ifBlank { "No active meters found." },
+                    showHeading = false
+                )
+            })
+            form.addView(sectionPanel(
+                title = "Quick actions",
+                description = "Shortcuts styled like the web operations tiles so common tasks are easier to scan."
+            ) {
+                addView(quickActionGrid(listOf(
+                    Triple("Statement", R.drawable.ic_receipt, ::showStatement),
+                    Triple("Bills", R.drawable.ic_wallet) { showBills() },
+                    Triple("Payments", R.drawable.ic_circle_check, ::showPayments),
+                    Triple("Meters", R.drawable.ic_meter, ::showMeters),
+                    Triple("Readings", R.drawable.ic_circle_clock, ::showReadings),
+                    Triple("Submit reading", R.drawable.ic_meter, ::showSubmitReading),
+                    Triple("Complaints", R.drawable.ic_support, ::showComplaints),
+                    Triple("Support chat", R.drawable.ic_support, ::showSupportChat)
+                )))
+            })
+        }
         if (isStaffUser()) {
             val workspaces = listOfNotNull(
                 Triple("Customers & service", "Customer records, onboarding, locations and complaints", R.drawable.ic_group)
@@ -1404,6 +1426,8 @@ class MainActivity : AppCompatActivity() {
     private fun isAdminUser(): Boolean = currentUser?.optBoolean("is_admin", userRole() == "admin") ?: false
 
     private fun isStaffUser(): Boolean = currentUser?.optBoolean("is_staff", userRole() != "customer") ?: false
+
+    private fun isCustomerUser(): Boolean = !isStaffUser()
 
     private fun userPermissions(): Set<String> {
         val granted = currentUser?.optJSONArray("permissions")
@@ -1614,16 +1638,16 @@ class MainActivity : AppCompatActivity() {
             title = "Available tools",
             description = "This mobile workspace follows the same grouped operations model as the web application."
         ) {
-        destinations.forEach { (label, action) ->
-            addWorkspace(
-                this,
-                label,
-                "Open $label.",
-                iconForWorkspaceLabel(label),
-                action,
-                toneForWorkspaceLabel(label)
-            )
-        }
+            destinations.forEach { (label, action) ->
+                addWorkspace(
+                    this,
+                    label,
+                    "Open $label.",
+                    iconForWorkspaceLabel(label),
+                    action,
+                    toneForWorkspaceLabel(label)
+                )
+            }
         })
         show(form)
     }
