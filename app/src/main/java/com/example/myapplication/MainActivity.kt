@@ -42,7 +42,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -6154,9 +6153,8 @@ class MainActivity : AppCompatActivity() {
             recordingScreenLoad = false
             pendingScreenLoad = null
         }
-        val root = SwipeRefreshLayout(this).apply {
-            setColorSchemeColors(primaryDark)
-            setProgressBackgroundColorSchemeColor(cardBackground)
+        val root = PullRefreshLayout(this).apply {
+            setColors(primaryDark, cardBackground)
             isEnabled = screenLoad != null
             addView(scroll)
         }
@@ -6195,7 +6193,7 @@ class MainActivity : AppCompatActivity() {
 
     // Pull-to-refresh replays the GET request that originally built the screen; the
     // refreshed result replaces the current screen in place instead of adding history.
-    private fun refreshScreen(root: SwipeRefreshLayout) {
+    private fun refreshScreen(root: PullRefreshLayout) {
         val load = displayedScreen?.takeIf { it.view === root }?.reload
         if (load == null) {
             root.isRefreshing = false
@@ -6225,7 +6223,7 @@ class MainActivity : AppCompatActivity() {
         replaceOnNextShow = false
         displayedScreen = snapshot
         backAction = snapshot.backAction
-        (snapshot.view as? SwipeRefreshLayout)?.isRefreshing = false
+        (snapshot.view as? PullRefreshLayout)?.isRefreshing = false
         setContentView(snapshot.view)
         ViewCompat.requestApplyInsets(snapshot.view)
     }
