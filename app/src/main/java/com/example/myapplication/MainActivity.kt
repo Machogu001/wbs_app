@@ -1252,9 +1252,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
         val summaryCards = summaryCardViews(summary, screen.optJSONArray("summary_cards"))
-        val accountSummaryCards = if (summaryCards.isNotEmpty()) {
-            summaryCards
-        } else {
+        val accountSummaryCards = summaryCards.ifEmpty {
             listOf(
                 summaryCard(
                     "Outstanding",
@@ -1634,7 +1632,7 @@ class MainActivity : AppCompatActivity() {
             title = userSection?.optString("title").orEmpty().ifBlank { "Account details" },
             description = "Core identity and service information returned by the profile endpoint."
         ) {
-            if (userSection != null && userSection.optJSONArray("fields")?.length() ?: 0 > 0) {
+            if (userSection != null && (userSection.optJSONArray("fields")?.length() ?: 0) > 0) {
                 addProfileFields(this, userSection.optJSONArray("fields"), user, themePreference)
             } else {
                 addField(this, "Full name", user.optString("full_name"))
@@ -5292,6 +5290,8 @@ class MainActivity : AppCompatActivity() {
     // Terms & Conditions
     // ---------------------------------------------------------------------
 
+    private var termsFormatOverride: String? = null
+
     private fun showTermsConditions() {
         childScreen()
         showLoading("Loading terms and conditions")
@@ -5304,7 +5304,8 @@ class MainActivity : AppCompatActivity() {
                 val availableFormats = displayMetadata.optJSONArray("available_formats")?.let { options ->
                     (0 until options.length()).mapNotNull { index -> options.optString(index).takeIf(String::isNotBlank) }
                 }?.ifEmpty { null } ?: listOf("sections", "text", "html")
-                var selectedFormat = displayMetadata.optString("preferred_format").takeIf { it in availableFormats }
+                val selectedFormat = termsFormatOverride?.takeIf { it in availableFormats }
+                    ?: displayMetadata.optString("preferred_format").takeIf { it in availableFormats }
                     ?: availableFormats.firstOrNull().orEmpty().ifBlank { "sections" }
                 val sampleTemplates = data.optJSONObject("sample_templates") ?: JSONObject()
                 val form = screen("Terms & Conditions", "Customer terms and conditions")
@@ -5315,14 +5316,14 @@ class MainActivity : AppCompatActivity() {
                     ) {
                         addView(buttonRow(*availableFormats.map { format ->
                             format.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() } to {
-                                selectedFormat = format
+                                termsFormatOverride = format
                                 showTermsConditions()
                             }
                         }.toTypedArray()))
                     })
                 }
-                when {
-                    selectedFormat == "sections" -> {
+                when (selectedFormat) {
+                    "sections" -> {
                         val sections = data.optJSONArray("rendered_terms_sections")
                         if (sections != null && sections.length() > 0) {
                             for (index in 0 until sections.length()) {
@@ -5336,7 +5337,7 @@ class MainActivity : AppCompatActivity() {
                             form.addView(empty("Terms and conditions have not been added yet."))
                         }
                     }
-                    selectedFormat == "text" -> {
+                    "text" -> {
                         val plainText = data.optString("rendered_terms_text").ifBlank { termsText }
                         if (plainText.isBlank()) {
                             form.addView(empty("Terms and conditions have not been added yet."))
@@ -5577,7 +5578,6 @@ class MainActivity : AppCompatActivity() {
         )
         val billOptions = fieldSourceOptions(
             paymentWorkspaceData,
-            "bill_id",
             paymentWorkspaceData.optJSONArray("bills")
         )
         val targetLabel = fieldLabel(paymentWorkspaceData, "payment_target", "Payment target")
@@ -6805,9 +6805,9 @@ class MainActivity : AppCompatActivity() {
             .orEmpty()
             .ifBlank { fallback }
 
-    private fun fieldSourceOptions(data: JSONObject, fieldKey: String, source: JSONArray?): List<Pair<String, String>> {
+    private fun fieldSourceOptions(data: JSONObject, source: JSONArray?): List<Pair<String, String>> {
         if (source == null || source.length() == 0) return emptyList()
-        val field = data.optJSONObject("field_metadata")?.optJSONObject(fieldKey) ?: JSONObject()
+        val field = data.optJSONObject("field_metadata")?.optJSONObject("bill_id") ?: JSONObject()
         val labelKey = field.optString("label_key").ifBlank { "id" }
         val fallbackTemplate = field.optString("fallback_label_template")
         val options = mutableListOf<Pair<String, String>>()
@@ -7741,7 +7741,7 @@ class MainActivity : AppCompatActivity() {
                     val child = value.opt(key)
                     val childLabel = key.replace('_', ' ').replaceFirstChar { c -> c.uppercase() }
                     when {
-                        isLinkField(key, child) -> linkButtons += linkButton(key, child.toString(), label)
+                        isLinkField(key, child) -> linkButtons += linkButton(key, child?.toString().orEmpty(), label)
                         child is JSONObject || child is JSONArray -> nestedItems += childLabel to child
                         else -> if (child != null && child != JSONObject.NULL) {
                             scalarCards += summaryCard(

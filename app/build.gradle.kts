@@ -5,10 +5,8 @@ plugins {
 }
 
 val signingProperties = Properties().apply {
-    rootProject.file("release-signing.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
+    rootProject.file("release-signing.properties").inputStream().use(::load)
 }
-val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
-    .all { !signingProperties.getProperty(it).isNullOrBlank() }
 
 android {
     namespace = "com.example.myapplication"
@@ -20,28 +18,24 @@ android {
         applicationId = "ke.co.bremac.mywaterbill"
         minSdk = 31
         targetSdk = 37
-        versionCode = 22
-        versionName = "2.0.2"
+        versionCode = 23
+        versionName = "2.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        if (hasReleaseSigning) {
-            create("release") {
-                storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
-                storePassword = signingProperties.getProperty("storePassword")
-                keyAlias = signingProperties.getProperty("keyAlias")
-                keyPassword = signingProperties.getProperty("keyPassword")
-            }
+        create("release") {
+            storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
+            storePassword = signingProperties.getProperty("storePassword")
+            keyAlias = signingProperties.getProperty("keyAlias")
+            keyPassword = signingProperties.getProperty("keyPassword")
         }
     }
 
     buildTypes {
         release {
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
         }
