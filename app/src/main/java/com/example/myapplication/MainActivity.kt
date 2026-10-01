@@ -3,6 +3,7 @@ package com.example.myapplication
 import android.Manifest
 import android.app.AlertDialog
 import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.Intent
 import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
@@ -255,6 +256,7 @@ class MainActivity : AppCompatActivity() {
                 pendingScreenLoad = ScreenLoad(path, callback)
             }
         }
+        window.decorView.viewTreeObserver.addOnGlobalLayoutListener { localizeDates(window.decorView) }
         if (token == null) showLogin() else restoreSession()
     }
 
@@ -2488,8 +2490,8 @@ class MainActivity : AppCompatActivity() {
                         addView(buttonRow(
                             "Apply" to {
                                 loadStatement(
-                                    fromField.text.toString().trim(),
-                                    toField.text.toString().trim(),
+                                    isoDate(fromField),
+                                    isoDate(toField),
                                     statusField.tag?.toString().orEmpty()
                                 )
                             },
@@ -2513,8 +2515,8 @@ class MainActivity : AppCompatActivity() {
                     form.addView(actionButton(getString(R.string.statement_pdf_button)).apply {
                         setOnClickListener {
                             val params = mutableListOf("type=statement")
-                            fromField.text.toString().trim().takeIf(String::isNotBlank)?.let { params += "from=${Uri.encode(it)}" }
-                            toField.text.toString().trim().takeIf(String::isNotBlank)?.let { params += "to=${Uri.encode(it)}" }
+                            isoDate(fromField).takeIf(String::isNotBlank)?.let { params += "from=${Uri.encode(it)}" }
+                            isoDate(toField).takeIf(String::isNotBlank)?.let { params += "to=${Uri.encode(it)}" }
                             showDocumentViewer(api.resolveUrl("document.php?${params.joinToString("&")}"), getString(R.string.statement_pdf_title))
                         }
                     })
@@ -2670,8 +2672,8 @@ class MainActivity : AppCompatActivity() {
                                 statusField.tag?.toString().orEmpty(),
                                 limitField.tag?.toString()?.toIntOrNull() ?: limit,
                                 1,
-                                fromField.text.toString().trim(),
-                                toField.text.toString().trim()
+                                isoDate(fromField),
+                                isoDate(toField)
                             )
                         },
                         "Clear" to {
@@ -2720,10 +2722,10 @@ class MainActivity : AppCompatActivity() {
                     val limitValue = pagination.optInt("limit", limit)
                     val buttons = mutableListOf<Pair<String, () -> Unit>>()
                     if (pagination.optBoolean("has_previous_page")) {
-                        buttons += "Previous" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue - 1, fromField.text.toString().trim(), toField.text.toString().trim()) }
+                        buttons += "Previous" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue - 1, isoDate(fromField), isoDate(toField)) }
                     }
                     if (pagination.optBoolean("has_next_page")) {
-                        buttons += "Next" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue + 1, fromField.text.toString().trim(), toField.text.toString().trim()) }
+                        buttons += "Next" to { childScreen(); showBills(statusField.tag?.toString().orEmpty(), limitValue, pageValue + 1, isoDate(fromField), isoDate(toField)) }
                     }
                     if (buttons.isNotEmpty()) {
                         form.addView(buttonRow(*buttons.toTypedArray()))
@@ -3044,7 +3046,7 @@ class MainActivity : AppCompatActivity() {
         )
         val installments = input("Installment count (default 3)", InputType.TYPE_CLASS_NUMBER)
         val frequency = input("Frequency: weekly or monthly").apply { setText(R.string.payment_frequency_monthly) }
-        val startDate = input("Start date YYYY-MM-DD (optional)")
+        val startDate = datePickerInput("Start date (optional)", "")
         val reason = multilineInput("Reason")
         val submit = actionButton("Submit request")
         val form = screen("Bill request", "Requests are sent for financial approval.")
@@ -3064,7 +3066,7 @@ class MainActivity : AppCompatActivity() {
             if (actionValue == "installment") {
                 body.put("installment_count", installments.text.toString().toIntOrNull() ?: 3)
                 body.put("frequency", frequency.text.toString().trim().lowercase())
-                startDate.text.toString().trim().takeIf(String::isNotBlank)?.let {
+                isoDate(startDate).takeIf(String::isNotBlank)?.let {
                     body.put("start_date", it)
                 }
             }
@@ -3325,8 +3327,8 @@ class MainActivity : AppCompatActivity() {
             }
             val fields = mutableMapOf("current_reading" to reading.text.toString())
             if (meter.text.isNotBlank()) fields["meter_number"] = meter.text.toString().trim()
-            if (billingMonth.text.isNotBlank()) fields["billing_month"] = billingMonth.text.toString().trim()
-            if (dueDate.text.isNotBlank()) fields["due_date"] = dueDate.text.toString().trim()
+            if (isoDate(billingMonth).isNotBlank()) fields["billing_month"] = isoDate(billingMonth)
+            if (isoDate(dueDate).isNotBlank()) fields["due_date"] = isoDate(dueDate)
             setLoading(submit, true, "Submit reading")
             api.upload("submit_reading.php", fields, "meter_photo", photo, contentResolver) { result ->
                 runOnUiThread {
@@ -3577,7 +3579,7 @@ class MainActivity : AppCompatActivity() {
                         listOf(planAmount, count, frequency, startDate, planReason).forEach(::addView)
                         addView(actionButton("Request installment plan").apply {
                             setOnClickListener {
-                                submitInstallmentRequest(billId, planAmount.text.toString(), count.text.toString(), frequency.tag?.toString().orEmpty(), startDate.text.toString(), planReason.text.toString())
+                                submitInstallmentRequest(billId, planAmount.text.toString(), count.text.toString(), frequency.tag?.toString().orEmpty(), isoDate(startDate), planReason.text.toString())
                             }
                         })
                     } else {
@@ -4084,8 +4086,8 @@ class MainActivity : AppCompatActivity() {
                         query.text.toString().trim(),
                         typeFilter.tag?.toString().orEmpty().ifBlank { "all" },
                         statusFilter.tag?.toString().orEmpty().ifBlank { "all" },
-                        fromDate.text.toString().trim(),
-                        toDate.text.toString().trim(),
+                        isoDate(fromDate),
+                        isoDate(toDate),
                         assigneeFilter.tag?.toString().orEmpty().ifBlank { "all" }
                     )
                 }
@@ -4819,8 +4821,8 @@ class MainActivity : AppCompatActivity() {
                 val ownerField = dropdownInput("Network owner", listOptions(options.optJSONArray("network_owners"), "All networks"), filters["network_owner"].orEmpty())
                 val asnField = dropdownInput("ASN", listOptions(options.optJSONArray("asns"), "All ASN"), filters["asn"].orEmpty())
                 fun currentFilters() = mapOf(
-                    "from" to fromField.text.toString().trim(),
-                    "to" to toField.text.toString().trim(),
+                    "from" to isoDate(fromField),
+                    "to" to isoDate(toField),
                     "user_id" to adminField.tag?.toString().orEmpty(),
                     "channel" to channelField.tag?.toString().orEmpty(),
                     "action" to actionField.text.toString().trim(),
@@ -5188,7 +5190,7 @@ class MainActivity : AppCompatActivity() {
                 form.addView(toInput)
                 form.addView(secondaryButton("Refresh reconciliation").apply {
                     setOnClickListener {
-                        loadAccountingOverview(typePicker.tag?.toString().orEmpty(), fromInput.text.toString().trim(), toInput.text.toString().trim())
+                        loadAccountingOverview(typePicker.tag?.toString().orEmpty(), isoDate(fromInput), isoDate(toInput))
                     }
                 })
                 show(form)
@@ -5316,7 +5318,7 @@ class MainActivity : AppCompatActivity() {
             api.request(
                 "admin/accounting_overview.php", "POST",
                 JSONObject().put("action", "post_entry")
-                    .put("entry_date", entryDate.text.toString().trim())
+                    .put("entry_date", isoDate(entryDate))
                     .put("memo", memo.text.toString().trim())
                     .put("debit_account_id", debitId)
                     .put("credit_account_id", creditId)
@@ -5342,23 +5344,23 @@ class MainActivity : AppCompatActivity() {
         val form = screen("Lock / unlock period", "")
         listOf(periodKey, note, lock, unlock).forEach(form::addView)
         lock.setOnClickListener {
-            if (periodKey.text.isBlank()) {
+            if (isoDate(periodKey).isBlank()) {
                 toast("Enter a period key.")
                 return@setOnClickListener
             }
             postAction(
                 "admin/accounting_overview.php",
-                JSONObject().put("action", "lock_period").put("period_key", periodKey.text.toString().trim()).put("note", note.text.toString().trim())
+                JSONObject().put("action", "lock_period").put("period_key", isoDate(periodKey)).put("note", note.text.toString().trim())
             ) { showAccountingOverview() }
         }
         unlock.setOnClickListener {
-            if (periodKey.text.isBlank()) {
+            if (isoDate(periodKey).isBlank()) {
                 toast("Enter a period key.")
                 return@setOnClickListener
             }
             postAction(
                 "admin/accounting_overview.php",
-                JSONObject().put("action", "unlock_period").put("period_key", periodKey.text.toString().trim()).put("note", note.text.toString().trim())
+                JSONObject().put("action", "unlock_period").put("period_key", isoDate(periodKey)).put("note", note.text.toString().trim())
             ) { showAccountingOverview() }
         }
         show(form)
@@ -5396,7 +5398,7 @@ class MainActivity : AppCompatActivity() {
                 form.addView(toInput)
                 form.addView(secondaryButton("Load reports").apply {
                     setOnClickListener {
-                        loadAccountingReports(fromInput.text.toString().trim(), toInput.text.toString().trim())
+                        loadAccountingReports(isoDate(fromInput), isoDate(toInput))
                     }
                 })
                 form.addView(sectionTitle("Financial statements"))
@@ -5744,7 +5746,7 @@ class MainActivity : AppCompatActivity() {
                         api.request(
                             "admin/accounting_transfers.php", "POST",
                             JSONObject().put("action", "post_transfer")
-                                .put("transfer_date", transferDate.text.toString().trim())
+                                .put("transfer_date", isoDate(transferDate))
                                 .put("from_account_id", fromId)
                                 .put("to_account_id", toId)
                                 .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
@@ -6740,8 +6742,8 @@ class MainActivity : AppCompatActivity() {
                 JSONObject().put("action", "save_tariff_plan").put("tariff_plan_id", plan?.optInt("id") ?: 0)
                     .put("tariff_name", name.text.toString().trim())
                     .put("tariff_category", category.tag?.toString().orEmpty())
-                    .put("effective_from", effectiveFrom.text.toString().trim())
-                    .put("effective_to", effectiveTo.text.toString().trim())
+                    .put("effective_from", isoDate(effectiveFrom))
+                    .put("effective_to", isoDate(effectiveTo))
                     .put("base_rate_per_unit", baseRate.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_service_charge", serviceCharge.text.toString().toDoubleOrNull() ?: 0.0)
                     .put("tariff_vat_rate", vatRate.text.toString().toDoubleOrNull() ?: 0.0)
@@ -7171,7 +7173,7 @@ class MainActivity : AppCompatActivity() {
         listOf(amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
         addBack(form)
         save.setOnClickListener {
-            if (amount.text.isBlank() || paidDate.text.isBlank()) {
+            if (amount.text.isBlank() || isoDate(paidDate).isBlank()) {
                 toast("Enter the amount and paid date.")
                 return@setOnClickListener
             }
@@ -7193,8 +7195,8 @@ class MainActivity : AppCompatActivity() {
                 .put("payment_method", method.tag?.toString().orEmpty())
                 .put("payment_reference", reference.text.toString().trim())
                 .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
-                .put("paid_date", paidDate.text.toString().trim())
-                .put("paid_time", paidTime.text.toString().trim())
+                .put("paid_date", isoDate(paidDate))
+                .put("paid_time", isoDate(paidTime))
                 .put("phone_number", phone.text.toString().trim())
                 .put("payment_note", note.text.toString().trim())
             setLoading(save, true, "Record payment")
@@ -7577,8 +7579,8 @@ class MainActivity : AppCompatActivity() {
                         entries.put(JSONObject()
                             .put("account_or_meter", identifier)
                             .put("current_reading", reading.toDoubleOrNull() ?: 0.0)
-                            .put("billing_month", cells.getOrNull(2).orEmpty().ifBlank { importBillingMonth.text.toString().trim() })
-                            .put("due_date", cells.getOrNull(3).orEmpty().ifBlank { importDueDate.text.toString().trim() }))
+                            .put("billing_month", cells.getOrNull(2).orEmpty().ifBlank { isoDate(importBillingMonth) })
+                            .put("due_date", cells.getOrNull(3).orEmpty().ifBlank { isoDate(importDueDate) }))
                     }
                     if (entries.length() == 0) { toast("Paste at least one CSV reading row."); return@setOnClickListener }
                     setLoading(importButton, true, "Import pasted CSV readings")
@@ -7590,7 +7592,7 @@ class MainActivity : AppCompatActivity() {
                     val entries = JSONArray()
                     rows.forEach { (identifier, reading) ->
                         if (identifier.text.isNotBlank() || reading.text.isNotBlank()) {
-                            entries.put(JSONObject().put("account_or_meter", identifier.text.toString().trim()).put("current_reading", reading.text.toString().toDoubleOrNull() ?: 0.0).put("billing_month", billingMonth.text.toString().trim()).put("due_date", dueDate.text.toString().trim()))
+                            entries.put(JSONObject().put("account_or_meter", identifier.text.toString().trim()).put("current_reading", reading.text.toString().toDoubleOrNull() ?: 0.0).put("billing_month", isoDate(billingMonth)).put("due_date", isoDate(dueDate)))
                         }
                     }
                     if (entries.length() == 0) { toast("Add at least one client reading before submitting."); return@setOnClickListener }
@@ -8735,27 +8737,47 @@ class MainActivity : AppCompatActivity() {
         parent.addView(button)
     }
 
+    // Date fields show dd-MM-yyyy (or MM-yyyy for months) while the server still receives
+    // ISO values (yyyy-MM-dd / yyyy-MM); read them with isoDate(field).
     private fun datePickerInput(hintText: String, initialValue: String, pickerMode: String = "date"): EditText {
         val field = input(hintText).apply {
             keyListener = null
             isFocusable = false
             isClickable = true
-            setText(initialValue)
         }
+        val monthOnly = pickerMode.equals("month", ignoreCase = true)
+        val timeOnly = pickerMode.equals("time", ignoreCase = true)
+        val initial = initialValue.trim().takeUnless { it == "null" }.orEmpty()
+        setIsoDate(field, initial)
         field.setOnClickListener {
             val calendar = Calendar.getInstance()
-            runCatching {
-                SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }
-                    .parse(field.text.toString())
-            }.getOrNull()?.let(calendar::setTime)
+            val current = isoDate(field)
+            if (timeOnly) {
+                val parts = current.split(":")
+                TimePickerDialog(
+                    this,
+                    { _, hour, minute -> setIsoDate(field, String.format(Locale.US, "%02d:%02d", hour, minute)) },
+                    parts.getOrNull(0)?.toIntOrNull() ?: calendar.get(Calendar.HOUR_OF_DAY),
+                    parts.getOrNull(1)?.toIntOrNull() ?: calendar.get(Calendar.MINUTE),
+                    true
+                ).show()
+                return@setOnClickListener
+            }
+            listOf("yyyy-MM-dd", "yyyy-MM").firstNotNullOfOrNull { pattern ->
+                runCatching {
+                    SimpleDateFormat(pattern, Locale.US).apply { isLenient = false }.parse(current.take(pattern.length))
+                }.getOrNull()
+            }?.let(calendar::setTime)
             DatePickerDialog(
                 this,
                 { _, year, month, day ->
-                    field.setText(
-                        if (pickerMode.equals("month", ignoreCase = true)) {
-                            String.format(Locale.US, "%04d-%02d-01", year, month + 1)
-                        } else {
-                            String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day)
+                    setIsoDate(
+                        field,
+                        when {
+                            monthOnly && Regex("^\\d{4}-\\d{2}$").matches(initial) ->
+                                String.format(Locale.US, "%04d-%02d", year, month + 1)
+                            monthOnly -> String.format(Locale.US, "%04d-%02d-01", year, month + 1)
+                            else -> String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day)
                         }
                     )
                 },
@@ -8767,6 +8789,45 @@ class MainActivity : AppCompatActivity() {
         return field
     }
 
+    private fun setIsoDate(field: EditText, value: String) {
+        field.setTag(R.id.iso_date_value, value)
+        field.setText(displayDate(value))
+    }
+
+    private fun isoDate(field: EditText): String =
+        ((field.getTag(R.id.iso_date_value) as? String) ?: field.text.toString()).trim()
+
+    private val isoDateRegex = Regex("(?<![\\d-])(\\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(?![\\d-])")
+    private val isoMonthRegex = Regex("^(\\d{4})-(0[1-9]|1[0-2])$")
+
+    // Converts any yyyy-MM-dd date inside a text to dd-MM-yyyy (a bare yyyy-MM becomes MM-yyyy).
+    private fun displayDate(value: String): String {
+        isoMonthRegex.matchEntire(value.trim())?.let { return "${it.groupValues[2]}-${it.groupValues[1]}" }
+        return isoDateRegex.replace(value) { "${it.groupValues[3]}-${it.groupValues[2]}-${it.groupValues[1]}" }
+    }
+
+    // Applied to every screen so dates coming from the server are shown as dd-MM-yyyy.
+    // Replacements keep the same length, so styled (spanned) text keeps its formatting.
+    private fun localizeDates(view: View) {
+        when (view) {
+            is EditText -> Unit
+            is TextView -> {
+                val current = view.text ?: return
+                if (current.length < 10 || !isoDateRegex.containsMatchIn(current)) return
+                if (current is android.text.Spanned) {
+                    val builder = android.text.SpannableStringBuilder(current)
+                    isoDateRegex.findAll(current).forEach { match ->
+                        val (year, month, day) = match.destructured
+                        builder.replace(match.range.first, match.range.last + 1, "$day-$month-$year")
+                    }
+                    view.text = builder
+                } else {
+                    view.text = displayDate(current.toString())
+                }
+            }
+            is ViewGroup -> for (index in 0 until view.childCount) localizeDates(view.getChildAt(index))
+        }
+    }
     private fun suggestionRow(title: String, subtitle: String, action: () -> Unit) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         isClickable = true
