@@ -41,8 +41,6 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -497,8 +495,7 @@ class MainActivity : AppCompatActivity() {
             addField(form, "M-Pesa receipt", latestPayment.optString("mpesa_receipt").ifBlank { "Pending" })
         }
         registrationPayment?.let {
-            addUrlButton(form, "Open payment page", it.optString("public_payment_url"))
-            addDocumentButton(form, "Open document", it.optString("document_url"))
+            addDocumentButton(form, "Open registration proforma", it.optString("document_url"))
         }
         form.addView(sectionTitle("Resend M-Pesa prompt"))
         form.addView(body("Optionally enter a different phone number, or leave blank to use your account phone number.").apply {
@@ -2008,11 +2005,17 @@ class MainActivity : AppCompatActivity() {
                     for (actionIndex in 0 until itemActions.length()) {
                         val action = itemActions.optJSONObject(actionIndex) ?: continue
                         if (action.optString("type") == "link") {
-                            addUrlButton(
-                                form,
-                                action.optString("label").ifBlank { "Open link" },
-                                bill.optString(action.optString("field"))
-                            )
+                            val field = action.optString("field")
+                            val label = action.optString("label").ifBlank { "Open link" }
+                            if (field.contains("payment", ignoreCase = true) && !field.contains("receipt", ignoreCase = true)) {
+                                if (bill.optDouble("outstanding_amount") > 0.01) {
+                                    form.addView(secondaryButton("Pay with M-Pesa").apply {
+                                        setOnClickListener { showPaymentForm(bill.optInt("id")) }
+                                    })
+                                }
+                            } else {
+                                addUrlButton(form, label, bill.optString(field))
+                            }
                         }
                     }
                 }
@@ -2083,7 +2086,6 @@ class MainActivity : AppCompatActivity() {
                         pay.setOnClickListener { showPaymentForm(id) }
                         addView(pay)
                     }
-                    addUrlButton(this, "Open payment page", bill.optString("public_payment_url"))
                     addDocumentButton(this, "Open invoice", bill.optString("document_url"))
                     if (bill.optDouble("outstanding_amount") > 0.01) {
                         val request = secondaryButton("Request installment, waiver or write-off")
@@ -2546,7 +2548,7 @@ class MainActivity : AppCompatActivity() {
                             "${reading.optString("billing_month")} • ${reading.optString("status")}",
                             toneForStatus(reading.optString("status"), toneBlue)
                         ))
-                        addUrlButton(this, "View meter photo", reading.optString("photo_url"))
+                        addDocumentButton(this, "View meter photo", reading.optString("photo_url"))
                     }
                 })
                 addBack(form)
@@ -3112,8 +3114,18 @@ class MainActivity : AppCompatActivity() {
                         "${record.optString("item_label")} • ${record.optString("overall_label")}\n" +
                             "${money(record.optDouble("outstanding_amount"))} outstanding"
                     ))
-                    addUrlButton(form, "Open record", record.optString("open_url"))
-                    addUrlButton(form, "Open document", record.optString("document_url"))
+                    record.optInt("user_id").takeIf { it > 0 }?.let { userId ->
+                        form.addView(secondaryButton("Open customer").apply {
+                            setOnClickListener { showAdminCustomer(userId) }
+                        })
+                    }
+                    record.optString("account_number").takeIf(String::isNotBlank)?.let { account ->
+                        form.addView(secondaryButton("Open payments").apply {
+                            setOnClickListener { loadPaymentsWorkspace(account) }
+                        })
+                    }
+                    addDocumentButton(form, "Open document", record.optString("document_url"))
+                    addUrlButton(form, "Share payment link", record.optString("open_url"))
                 }
                 addBack(form)
                 show(form)
@@ -5764,7 +5776,11 @@ class MainActivity : AppCompatActivity() {
                         "${proforma.optString("full_name")} • ${proforma.optString("account_number")}",
                         "${proforma.optString("user_status")} • ${money(proforma.optDouble("outstanding_amount"))} outstanding"
                     ))
-                    addUrlButton(form, "Open share link", proforma.optString("share_url"))
+                    proforma.optString("share_url").takeIf(String::isNotBlank)?.let { shareUrl ->
+                        form.addView(secondaryButton("Share payment link").apply {
+                            setOnClickListener { shareLink(normalizeExternalUrl(shareUrl), "Registration proforma") }
+                        })
+                    }
                     if (proforma.optString("user_status") != "active") {
                         val id = proforma.optInt("id")
                         val sendStk = secondaryButton("Send M-Pesa STK push")
@@ -7336,14 +7352,54 @@ class MainActivity : AppCompatActivity() {
     private fun addUrlButton(parent: LinearLayout, label: String, url: String) {
         if (url.isBlank()) return
         parent.addView(secondaryButton(label).apply {
-            setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, normalizeExternalUrl(url).toUri()))
-                } catch (_: Exception) {
-                    toast("No app can open this link.")
-                }
-            }
+            setOnClickListener { openAppLink(url, label.removePrefix("View ").removePrefix("Open ")) }
         })
+    }
+
+    // Keeps WBS website links inside the app: documents and images render natively,
+    // known website pages map to the matching app screen, and anything else (such as
+    // customer payment links) is offered through the share sheet instead of a browser.
+    private fun openAppLink(rawUrl: String, title: String) {
+        val url = normalizeExternalUrl(rawUrl)
+        val uri = runCatching { url.toUri() }.getOrNull()
+        val websiteHost = getString(R.string.website_url).toUri().host.orEmpty()
+        if (uri == null || uri.host.isNullOrBlank()) {
+            toast(getString(R.string.link_unavailable))
+            return
+        }
+        if (!uri.host.equals(websiteHost, ignoreCase = true)) {
+            openExternal(url)
+            return
+        }
+        val path = uri.path.orEmpty().trimEnd('/').lowercase(Locale.ROOT)
+        val isImage = listOf(".jpg", ".jpeg", ".png", ".webp", ".gif").any(path::endsWith)
+        when {
+            path.endsWith("/api/mobile/document.php") || path == "/invoice" ||
+                path == "/payment-receipt-pdf" || path.endsWith(".pdf") || isImage ->
+                showDocumentViewer(url, title)
+            path == "/payment-receipt" ->
+                showDocumentViewer(url.replaceFirst("/payment-receipt", "/payment-receipt-pdf"), title)
+            path == "/admin/payments" -> loadPaymentsWorkspace(uri.getQueryParameter("account").orEmpty())
+            path == "/admin/users" ->
+                uri.getQueryParameter("edit_id")?.toIntOrNull()?.takeIf { it > 0 }
+                    ?.let(::showAdminCustomer) ?: showCustomerManagement()
+            path == "/bills" -> showBills()
+            path == "/payments" -> showPayments()
+            else -> shareLink(url, title)
+        }
+    }
+
+    private fun shareLink(url: String, title: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, url)
+        }
+        try {
+            startActivity(Intent.createChooser(send, getString(R.string.share_link_title, title)))
+        } catch (_: Exception) {
+            toast(getString(R.string.link_unavailable))
+        }
     }
 
     private fun addDocumentButton(parent: LinearLayout, label: String, url: String) {
@@ -7382,14 +7438,12 @@ class MainActivity : AppCompatActivity() {
                             }
                         when {
                             isPdf -> showPdfDocument(document.file, title)
-                            document.contentType.startsWith("text/html") ||
-                                document.contentType.startsWith("text/plain") ->
-                                showHtmlDocument(url, document, title)
                             document.contentType.startsWith("image/") ->
                                 showImageDocument(document.file, title)
                             else -> {
+                                // Never render website pages (e.g. a login redirect) inside the app.
                                 document.file.delete()
-                                handleError(IllegalStateException("This document format is not supported in the app."))
+                                handleError(IllegalStateException(getString(R.string.document_unavailable)))
                             }
                         }
                     } catch (error: Exception) {
@@ -7472,41 +7526,6 @@ class MainActivity : AppCompatActivity() {
         show(form)
         activePdfRenderer = renderer
         activePdfDescriptor = descriptor
-    }
-
-    private fun showHtmlDocument(url: String, document: DownloadedDocument, title: String) {
-        val form = screen(title, "")
-        val html = document.file.readText(Charsets.UTF_8)
-        document.file.delete()
-        val webView = WebView(this).apply {
-            settings.javaScriptEnabled = false
-            settings.domStorageEnabled = false
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView,
-                    request: android.webkit.WebResourceRequest
-                ): Boolean {
-                    val target = request.url
-                    if (target.scheme == "https") openExternal(target.toString())
-                    return true
-                }
-            }
-            loadDataWithBaseURL(
-                url,
-                html,
-                "text/html",
-                "UTF-8",
-                null
-            )
-        }
-        form.addView(webView, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            (resources.displayMetrics.heightPixels - dp(190)).coerceAtLeast(dp(240))
-        ))
-        addBack(form)
-        show(form)
     }
 
     private fun showImageDocument(file: File, title: String) {
@@ -7699,25 +7718,16 @@ class MainActivity : AppCompatActivity() {
             .replace("pdf", "PDF").trim().ifBlank { "document" }
         val inApp = listOf("document", "receipt", "invoice", "pdf", "statement", "photo", "image")
             .any { key.contains(it, ignoreCase = true) }
-        return secondaryButton("Open $name").apply {
+        return secondaryButton(if (inApp) "Open $name" else "Share $name").apply {
             setOnClickListener {
+                val display = name.replaceFirstChar(Char::uppercase)
                 AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Open ${name.replaceFirstChar(Char::uppercase)}?")
+                    .setTitle(if (inApp) "Open $display?" else "Share $display?")
                     .setMessage(
                         if (inApp) "Do you want to open this $name for $context?"
-                        else "Do you want to open this $name for $context in your browser?"
+                        else "Share this $name for $context?"
                     )
-                    .setPositiveButton("Open") { _, _ ->
-                        if (inApp) {
-                            showDocumentViewer(normalizeExternalUrl(url), name.replaceFirstChar(Char::uppercase))
-                        } else {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, normalizeExternalUrl(url).toUri()))
-                            } catch (_: Exception) {
-                                toast("No app can open this link.")
-                            }
-                        }
-                    }
+                    .setPositiveButton(if (inApp) "Open" else "Share") { _, _ -> openAppLink(url, display) }
                     .setNegativeButton("Cancel", null)
                     .show()
             }
