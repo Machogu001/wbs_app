@@ -6610,6 +6610,10 @@ class MainActivity : AppCompatActivity() {
                     listOf("" to "Auto", "A" to "A – Zero-rated / Exempt", "B" to "B – Standard VAT"),
                     settings.optString("etims_taxation_type_code")
                 )
+                val billNotificationTemplate = multilineInput("Bill notification template").apply {
+                    minLines = 10
+                    setText(settings.optString("bill_notification_template"))
+                }
                 val enforceGps = CheckBox(this).apply {
                     text = getString(R.string.require_accurate_gps)
                     isChecked = settings.optBoolean("enforce_location_accuracy")
@@ -6629,6 +6633,9 @@ class MainActivity : AppCompatActivity() {
                 })
                 form.addView(sectionPanel("Locale & system", "Currency, locale, timezone, financial year and GPS enforcement.") {
                     listOf(currencyCode, localeCode, timezoneName, fyStart, enforceGps).forEach(::addView)
+                })
+                form.addView(sectionPanel("Bill notification template", "Used for bill SMS and email text. Placeholders such as {client_name}, {month}, {total}, {account}, {due_date}, and {payment_url} are supported.") {
+                    addView(billNotificationTemplate)
                 })
                 form.addView(sectionPanel("eTIMS, tax and mobile API", "Integration URL, credentials, VAT tax code and API-key enforcement.") {
                     listOf(companyPin, etimsUrl, etimsKey, vatRate, taxCode, requireApiKey, save).forEach(::addView)
@@ -6651,6 +6658,7 @@ class MainActivity : AppCompatActivity() {
                         .put("vat_rate", vatRate.text.toString().toDoubleOrNull() ?: 0.0)
                         .put("etims_taxation_type_code", taxCode.tag?.toString().orEmpty())
                         .put("registration_fee", registrationFee.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("bill_notification_template", billNotificationTemplate.text.toString())
                         .put("enforce_location_accuracy", enforceGps.isChecked)
                         .put("mobile_api_key_required", requireApiKey.isChecked)
                     setLoading(save, true, "Save settings")
