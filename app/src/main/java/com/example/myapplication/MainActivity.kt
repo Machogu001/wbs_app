@@ -46,6 +46,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -222,6 +223,9 @@ class MainActivity : AppCompatActivity() {
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Align with Android 15's default edge-to-edge behavior while keeping
+        // consistent backward compatibility on older Android versions.
+        enableEdgeToEdge()
         // Applied before super.onCreate() so AppCompat resolves and loads this
         // Activity's initial resources (colors/insets appearance) in the right
         // light/dark mode from the very first frame - no flash, no recreation.
