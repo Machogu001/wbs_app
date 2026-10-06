@@ -1601,9 +1601,9 @@ class MainActivity : AppCompatActivity() {
             for (index in 0 until bills.length()) {
                 val bill = bills.optJSONObject(index) ?: continue
                 val outstanding = if (bill.has("outstanding_amount")) {
-                    bill.optDouble("outstanding_amount")
+                    normalizeAmount(bill.optDouble("outstanding_amount"))
                 } else {
-                    (bill.optDouble("amount") - bill.optDouble("paid_amount")).coerceAtLeast(0.0)
+                    normalizeAmount(bill.optDouble("amount") - bill.optDouble("paid_amount")).coerceAtLeast(0.0)
                 }
                 addView(card(
                     "${bill.optString("account_number").ifBlank { "Bill #${bill.optInt("id")}" }} • ${bill.optString("billing_month").take(7)}",
@@ -9851,7 +9851,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun money(amount: Double): String =
-        NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-KE")).format(amount)
+        NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-KE")).format(normalizeAmount(amount))
+
+    private fun normalizeAmount(value: Double): Double =
+        if (value.isFinite()) value else 0.0
 
     private fun today(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
