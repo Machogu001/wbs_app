@@ -1600,9 +1600,14 @@ class MainActivity : AppCompatActivity() {
             if (bills.length() == 0) addView(empty("No bills yet."))
             for (index in 0 until bills.length()) {
                 val bill = bills.optJSONObject(index) ?: continue
+                val outstanding = if (bill.has("outstanding_amount")) {
+                    bill.optDouble("outstanding_amount")
+                } else {
+                    (bill.optDouble("amount") - bill.optDouble("paid_amount")).coerceAtLeast(0.0)
+                }
                 addView(card(
                     "${bill.optString("account_number").ifBlank { "Bill #${bill.optInt("id")}" }} • ${bill.optString("billing_month").take(7)}",
-                    "${money(bill.optDouble("amount"))} • ${bill.optString("status").replaceFirstChar(Char::uppercase)}" +
+                    "Outstanding ${money(outstanding)} • ${bill.optString("status").replaceFirstChar(Char::uppercase)}" +
                         bill.optString("due_date").takeIf(String::isNotBlank)?.let { " • Due ${it.take(10)}" }.orEmpty(),
                     toneForStatus(bill.optString("status"), toneNeutral)
                 ).opens(canRecords && bill.optInt("user_id") > 0) { showAdminBill(bill.optInt("id"), bill.optInt("user_id")) })
