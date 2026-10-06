@@ -7825,7 +7825,7 @@ class MainActivity : AppCompatActivity() {
                 ))
                 val summary = data.optJSONObject("summary") ?: JSONObject()
                 form.addView(summaryCardGrid(listOf(
-                    summaryCard("Billed total", money(summary.optDouble("billed_total")), R.drawable.ic_receipt, toneBlue),
+                    summaryCard("Unpaid total", money(summary.optDouble("billed_total")), R.drawable.ic_receipt, toneAmber),
                     summaryCard("Completed payments", money(summary.optDouble("completed_payments_total")), R.drawable.ic_wallet, toneTeal)
                 )))
                 addPaymentRows(form, data.optJSONArray("recent_payments"), true)
