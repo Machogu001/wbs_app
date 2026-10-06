@@ -346,6 +346,7 @@ class MainActivity : AppCompatActivity() {
             imeOptions = EditorInfo.IME_ACTION_DONE
         }
         val login = actionButton("Sign in")
+        val forgotPassword = secondaryButton("Forgot password")
         val createAccount = secondaryButton("Create account")
         val form = screen("My Water Bill", "Secure access to your water account")
         form.addView(heroBanner(
@@ -363,8 +364,10 @@ class MainActivity : AppCompatActivity() {
         form.addView(labeledField("Account", identifier))
         form.addView(labeledField("Password", password))
         form.addView(login)
+        form.addView(forgotPassword)
         form.addView(createAccount)
         form.addView(loginFooter())
+        forgotPassword.setOnClickListener { showForgotPassword() }
         createAccount.setOnClickListener { loadRegistrationMetadata() }
         password.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -401,6 +404,69 @@ class MainActivity : AppCompatActivity() {
             }
         }
         show(form)
+    }
+
+    private fun showForgotPassword() {
+        backAction = ::showLogin
+        val identifier = input("Account number, phone or email")
+        val send = actionButton("Reset Password")
+        val form = screen(
+            "Forgot password",
+            "Enter your account number, phone number or email address. If we find a matching account, we will send a new password to your registered phone number via SMS."
+        )
+        form.addView(labeledField("Account", identifier))
+        form.addView(send)
+        addBack(form)
+        send.setOnClickListener {
+            val value = identifier.text.toString().trim()
+            if (value.isBlank()) {
+                toast("Enter your account number, phone or email")
+                return@setOnClickListener
+            }
+            setLoading(send, true, "Reset Password")
+            api.request(
+                "forgot_password.php",
+                "POST",
+                JSONObject().put("identifier", value)
+            ) { result ->
+                runOnUiThread {
+                    setLoading(send, false, "Reset Password")
+                    result.onSuccess { response ->
+                        val baseMessage = response.optString("message", "Password reset request received. If your account details match our records, a temporary password has been sent to your registered phone number.")
+                        val channelSummary = forgotPasswordChannelSummary(response.data().optJSONObject("channels"))
+                        toast(listOfNotNull(baseMessage, channelSummary).joinToString(" "))
+                        identifier.text?.clear()
+                    }.onFailure { error ->
+                        val detail = (error as? ApiException)
+                            ?.payload
+                            ?.optJSONObject("data")
+                            ?.optJSONObject("channels")
+                            ?.let(::forgotPasswordChannelSummary)
+                        if (detail.isNullOrBlank()) {
+                            handleError(error)
+                        } else {
+                            val base = error.message ?: "Password reset failed."
+                            handleError(IllegalStateException("$base $detail"))
+                        }
+                    }
+                }
+            }
+        }
+        show(form)
+    }
+
+    private fun forgotPasswordChannelSummary(channels: JSONObject?): String? {
+        if (channels == null) return null
+        val parts = mutableListOf<String>()
+        val sms = channels.optJSONObject("sms")
+        if (sms != null && (sms.optBoolean("attempted") || sms.optBoolean("required"))) {
+            parts += "SMS: ${if (sms.optBoolean("sent")) "sent" else "failed"}"
+        }
+        val email = channels.optJSONObject("email")
+        if (email != null && (email.optBoolean("attempted") || email.optBoolean("required"))) {
+            parts += "Email: ${if (email.optBoolean("sent")) "sent" else "failed"}"
+        }
+        return if (parts.isEmpty()) null else "Delivery status - ${parts.joinToString(", ")}."
     }
 
     private fun showTwoFactor(challenge: JSONObject) {

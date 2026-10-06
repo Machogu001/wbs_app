@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.Executors
 
-class ApiException(val statusCode: Int, message: String) : Exception(message)
+class ApiException(val statusCode: Int, message: String, val payload: JSONObject? = null) : Exception(message)
 
 data class DownloadedDocument(val file: File, val contentType: String)
 
@@ -193,10 +193,10 @@ class ApiClient(private val tokenProvider: () -> String?) {
         connection.disconnect()
         val json = if (text.isBlank()) JSONObject() else JSONObject(text)
         if (statusCode !in 200..299) {
-            throw ApiException(statusCode, json.optString("message", "Request failed ($statusCode)"))
+            throw ApiException(statusCode, json.optString("message", "Request failed ($statusCode)"), json)
         }
         if (json.optString("status").equals("error", ignoreCase = true)) {
-            throw ApiException(statusCode, json.optString("message", "The server could not process the request."))
+            throw ApiException(statusCode, json.optString("message", "The server could not process the request."), json)
         }
         return json
     }
