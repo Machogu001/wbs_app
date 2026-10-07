@@ -7255,6 +7255,53 @@ class MainActivity : AppCompatActivity() {
         billField?.let(form::addView)
         listOf(amount, method, reference, paidDate, paidTime, phone, note, save).forEach(form::addView)
         addBack(form)
+        fun currentOutstandingForTarget(selectedTarget: String, selectedBillId: Int): Double {
+            val bills = paymentWorkspaceData.optJSONArray("bills") ?: JSONArray()
+            return if (selectedTarget == "invoice") {
+                var outstanding = 0.0
+                for (index in 0 until bills.length()) {
+                    val bill = bills.optJSONObject(index) ?: continue
+                    if (bill.optInt("id") == selectedBillId) {
+                        outstanding = bill.optDouble("outstanding_amount", bill.optDouble("amount"))
+                        break
+                    }
+                }
+                outstanding
+            } else {
+                var totalOutstanding = 0.0
+                for (index in 0 until bills.length()) {
+                    val bill = bills.optJSONObject(index) ?: continue
+                    totalOutstanding += bill.optDouble("outstanding_amount", bill.optDouble("amount"))
+                }
+                totalOutstanding
+            }
+        }
+        fun submitManualPayment(currentPassword: String?) {
+            val selectedTarget = targetField.tag?.toString().orEmpty()
+            val selectedBillId = billField?.tag?.toString()?.toIntOrNull() ?: billId
+            val body = JSONObject()
+                .put("action", "manual_payment")
+                .put("account_number", accountNumber)
+                .put("bill_id", selectedBillId)
+                .put("payment_target", selectedTarget)
+                .put("payment_method", method.tag?.toString().orEmpty())
+                .put("payment_reference", reference.text.toString().trim())
+                .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
+                .put("paid_date", isoDate(paidDate))
+                .put("paid_time", isoDate(paidTime))
+                .put("phone_number", phone.text.toString().trim())
+                .put("payment_note", note.text.toString().trim())
+            if (!currentPassword.isNullOrBlank()) {
+                body.put("current_password", currentPassword)
+            }
+            setLoading(save, true, "Record payment")
+            api.request("admin/payments.php", "POST", body) { r ->
+                runOnUiThread {
+                    setLoading(save, false, "Record payment")
+                    r.onSuccess { toast(it.optString("message", "Payment recorded.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
+                }
+            }
+        }
         save.setOnClickListener {
             if (amount.text.isBlank() || isoDate(paidDate).isBlank()) {
                 toast("Enter the amount and paid date.")
@@ -7270,25 +7317,37 @@ class MainActivity : AppCompatActivity() {
                 toast("Choose the invoice to receipt.")
                 return@setOnClickListener
             }
-            val body = JSONObject()
-                .put("action", "manual_payment")
-                .put("account_number", accountNumber)
-                .put("bill_id", selectedBillId)
-                .put("payment_target", selectedTarget)
-                .put("payment_method", method.tag?.toString().orEmpty())
-                .put("payment_reference", reference.text.toString().trim())
-                .put("amount", amount.text.toString().toDoubleOrNull() ?: 0.0)
-                .put("paid_date", isoDate(paidDate))
-                .put("paid_time", isoDate(paidTime))
-                .put("phone_number", phone.text.toString().trim())
-                .put("payment_note", note.text.toString().trim())
-            setLoading(save, true, "Record payment")
-            api.request("admin/payments.php", "POST", body) { r ->
-                runOnUiThread {
-                    setLoading(save, false, "Record payment")
-                    r.onSuccess { toast(it.optString("message", "Payment recorded.")); loadPaymentsWorkspace(accountNumber) }.onFailure(::handleError)
-                }
+            val enteredAmount = amount.text.toString().toDoubleOrNull() ?: 0.0
+            val outstanding = currentOutstandingForTarget(selectedTarget, selectedBillId)
+            val excess = kotlin.math.max(0.0, enteredAmount - outstanding)
+            if (excess > 0.01) {
+                val password = input(
+                    "Re-enter your password to confirm excess payment",
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                )
+                AlertDialog.Builder(this)
+                    .setTitle("Confirm excess payment")
+                    .setMessage("This receipt exceeds the outstanding balance by ${money(excess)}. The excess will be stored as client credit.")
+                    .setView(password)
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Confirm", null)
+                    .create()
+                    .also { dialog ->
+                        dialog.setOnShowListener {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                if (password.text.isBlank()) {
+                                    toast("Enter your current password to continue.")
+                                } else {
+                                    dialog.dismiss()
+                                    submitManualPayment(password.text.toString())
+                                }
+                            }
+                        }
+                    }
+                    .show()
+                return@setOnClickListener
             }
+            submitManualPayment(null)
         }
         show(form)
     }
