@@ -6685,6 +6685,12 @@ class MainActivity : AppCompatActivity() {
                     listOf("" to "Auto", "A" to "A – Zero-rated / Exempt", "B" to "B – Standard VAT"),
                     settings.optString("etims_taxation_type_code")
                 )
+                val overdueReminderIntervalDays = input("Overdue reminder interval (days)", InputType.TYPE_CLASS_NUMBER).apply {
+                    setText(settings.optInt("overdue_reminder_interval_days", 3).toString())
+                }
+                val overdueReminderMaxSends = input("Overdue reminder limit", InputType.TYPE_CLASS_NUMBER).apply {
+                    setText(settings.optInt("overdue_reminder_max_sends", 0).toString())
+                }
                 val billNotificationTemplate = multilineInput("Bill notification template").apply {
                     minLines = 10
                     setText(settings.optString("bill_notification_template"))
@@ -6708,6 +6714,9 @@ class MainActivity : AppCompatActivity() {
                 })
                 form.addView(sectionPanel("Locale & system", "Currency, locale, timezone, financial year and GPS enforcement.") {
                     listOf(currencyCode, localeCode, timezoneName, fyStart, enforceGps).forEach(::addView)
+                })
+                form.addView(sectionPanel("Reminder schedule", "Configure how often overdue automatic reminders are sent after the due date.") {
+                    listOf(overdueReminderIntervalDays, overdueReminderMaxSends).forEach(::addView)
                 })
                 form.addView(sectionPanel("Bill notification template", "Used for bill SMS and email text. Placeholders such as {client_name}, {month}, {total}, {account}, {due_date}, and {payment_url} are supported.") {
                     addView(billNotificationTemplate)
@@ -6733,6 +6742,8 @@ class MainActivity : AppCompatActivity() {
                         .put("vat_rate", vatRate.text.toString().toDoubleOrNull() ?: 0.0)
                         .put("etims_taxation_type_code", taxCode.tag?.toString().orEmpty())
                         .put("registration_fee", registrationFee.text.toString().toDoubleOrNull() ?: 0.0)
+                        .put("overdue_reminder_interval_days", overdueReminderIntervalDays.text.toString().toIntOrNull() ?: 3)
+                        .put("overdue_reminder_max_sends", overdueReminderMaxSends.text.toString().toIntOrNull() ?: 0)
                         .put("bill_notification_template", billNotificationTemplate.text.toString())
                         .put("enforce_location_accuracy", enforceGps.isChecked)
                         .put("mobile_api_key_required", requireApiKey.isChecked)
